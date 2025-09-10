@@ -1,4 +1,4 @@
 # Pocket-Agent
 
 
-![Pocket Agent](./assets/pocket-agent.png =300x200)
+<img src="./assets/pocket-agent.png" alt="Pocket Agent" width="300">
