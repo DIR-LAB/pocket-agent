@@ -1,0 +1,63 @@
+[project]
+name = "pocket-agent"
+version = "0.1.0"
+description = "A lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Chris Egersdoerfer", email = "cegersdoerfer@gmail.com"},
+]
+maintainers = [
+    {name = "Chris Egersdoerfer", email = "cegersdoerfer@gmail.com"},
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.12.2",
+    "litellm>=1.76.3",
+]
+keywords = ["llm", "ai", "agent", "mcp", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/DIR-LAB/pocket-agent"
+"Repository" = "https://github.com/DIR-LAB/pocket-agent"
+"Bug Tracker" = "https://github.com/DIR-LAB/pocket-agent/issues"
+"Documentation" = "https://github.com/DIR-LAB/pocket-agent#readme"
+"Changelog" = "https://github.com/DIR-LAB/pocket-agent/releases"
+
+# Build system configuration
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Configure the package structure
+[tool.hatch.build.targets.wheel]
+packages = ["pocket_agent"]
+
+# Optional dependency groups for uv
+[dependency-groups]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0", 
+    "pytest-mock>=3.12.0",
+]
+dev = [
+    {include-group = "test"},
+    "pytest-cov>=4.1.0",
+    "pre-commit>=3.0.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
+]
+examples = [
+    "python-dotenv>=1.0.0",
+]
