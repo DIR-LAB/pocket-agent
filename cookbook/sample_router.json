@@ -1,0 +1,12 @@
+{
+    "models": [
+        {
+            "model_name": "gpt-5-nano",
+            "litellm_params": {
+                "model": "gpt-5-nano",
+                "tpm": 3000000,
+                "rpm": 5000
+            }
+        }
+    ]
+}

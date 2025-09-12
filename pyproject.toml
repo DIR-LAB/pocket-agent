@@ -61,3 +61,8 @@ dev = [
 examples = [
     "python-dotenv>=1.0.0",
 ]
+# Add this new group for cookbook examples
+cookbook = [
+    {include-group = "examples"},
+    "streamlit>=1.28.0",
+]

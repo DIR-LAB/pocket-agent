@@ -1,17 +1,26 @@
 from fastmcp import Client as MCPClient
+from fastmcp.client.client import CallToolResult as FastMCPCallToolResult
 from fastmcp.exceptions import ToolError
 from fastmcp.client.logging import LogMessage
-from mcp.types import ListToolsResult, CallToolResult as MCPCallToolResult
+from mcp.types import (
+    ListToolsResult, 
+    ListResourcesResult, 
+    ListResourceTemplatesResult, 
+    CallToolResult as MCPCallToolResult,
+    CallToolRequestParams as MCPCallToolRequestParams
+)
 from litellm.experimental_mcp_client.tools import (
                 transform_mcp_tool_to_openai_tool,
                 transform_openai_tool_call_request_to_mcp_tool_call_request,
             )
 from litellm.types.utils import ChatCompletionMessageToolCall
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, Literal
 import asyncio
 import logging
 import copy
+
+
 
 
 
@@ -20,22 +29,21 @@ class ToolResult:
     tool_call_id: str
     tool_call_name: str
     tool_result_content: list[dict]
+    _extra: Optional[dict] = None
 
 
-class Client:
-    def __init__(self, mcp_server_config: dict, 
+class PocketAgentClient:
+    def __init__(self, mcp_config: dict, 
                  mcp_logger: Optional[logging.Logger] = None,
                  mcp_log_handler: Optional[Callable[[LogMessage], None]] = None,
                  client_logger: Optional[logging.Logger] = None,
-                 elicitation_handler: Optional[Callable[[str], None]] = None,
-                 progress_handler: Optional[Callable[[str], None]] = None,
-                 sampling_handler: Optional[Callable[[str], None]] = None,
-                 message_handler: Optional[Callable[[str], None]] = None,
-                 on_tool_error: Optional[Callable[[Exception], bool]] = None,
-                 mcp_server_query_params: Optional[dict] = None
+                 on_tool_error: Optional[Callable[[ChatCompletionMessageToolCall, Exception], bool]] = None,
+                 mcp_server_query_params: Optional[dict] = None,
+                 tool_result_handler: Optional[Callable[[ChatCompletionMessageToolCall, FastMCPCallToolResult], ToolResult]] = None,
+                 **kwargs
                  ):
 
-        self.mcp_server_config = copy.deepcopy(mcp_server_config)
+        self.mcp_server_config = copy.deepcopy(mcp_config)
         if mcp_server_query_params:
             server_config_with_params = self._add_mcp_server_query_params(mcp_server_query_params)
             self.mcp_server_config = server_config_with_params
@@ -47,13 +55,13 @@ class Client:
         
         
         # Pass MCP log handler to underlying MCP client
-        self.client = MCPClient(self.mcp_server_config, 
-                                log_handler=mcp_log_handler,
-                                elicitation_handler=elicitation_handler, 
-                                progress_handler=progress_handler, 
-                                sampling_handler=sampling_handler, 
-                                message_handler=message_handler
+        self.client = MCPClient(transport=self.mcp_server_config, 
+                                log_handler=self.mcp_log_handler,
+                                **kwargs
                                 )
+        
+        self.on_tool_error = on_tool_error
+        self.tool_result_handler = tool_result_handler or self._default_tool_result_handler
 
 
     # This function allows agents to metadata via query params to MCP servers (e.g. supply a user id) 
@@ -89,96 +97,103 @@ class Client:
         self.mcp_logger.log(level, f"[MCP] {msg}", extra=extra)
 
 
-    async def _get_mcp_tools(self) -> ListToolsResult:
+    async def get_tools(self, format: Literal["mcp", "openai"] = "mcp") -> ListToolsResult:
+        self.client_logger.debug(f"Getting MCP tools in {format} format")
         async with self.client:
-            tools = await self.client.get_tools()
+            tools = await self.client.list_tools()
+        if format == "mcp":
+            self.client_logger.debug(f"MCP tools: {tools}")
             return tools
-    
+        elif format == "openai":
+            self.client_logger.debug(f"Converting MCP tools to OpenAI format")
+            openai_tools = [transform_mcp_tool_to_openai_tool(tool) for tool in tools]
+            self.client_logger.debug(f"OpenAI tools: {openai_tools}")
+            return openai_tools
+        else:
+            raise ValueError(f"Invalid tool list format. Expected 'mcp' or 'openai', got {format}")
 
-    async def _get_openai_tools(self) -> list[dict]:
-        tools = await self._get_mcp_tools()
-        openai_tools = []
-        for tool in tools:
-            openai_tools.append(transform_mcp_tool_to_openai_tool(tool))
-        return openai_tools
 
-    
-    async def call_tools(self, tool_calls: list[ChatCompletionMessageToolCall]) -> list[ToolResult]:
-        # call tools in parallel
-        async with self.client:
-            tool_results = await asyncio.gather(*[self.call_tool(tool_call) for tool_call in tool_calls])
-            return tool_results
-            
-
-    async def _get_tool_format(self, tool_name: str):
-        tools = await self._get_mcp_tools()
+    async def get_tool_input_format(self, tool_name: str):
+        tools = await self.get_tools(format="mcp")
         for tool in tools:
             if tool.name == tool_name:
                 return tool.inputSchema
         raise ValueError(f"Tool {tool_name} not found")
+
+    
+    def transform_tool_call_request(self, tool_call: ChatCompletionMessageToolCall) -> MCPCallToolRequestParams:
+        self.client_logger.debug(f"Transforming tool call request to MCP format: {tool_call}")
+        transformed_tool_call = transform_openai_tool_call_request_to_mcp_tool_call_request(openai_tool=tool_call.model_dump())
+        transformed_tool_call.id = tool_call.id
+        self.client_logger.debug(f"Transformed tool call request to MCP format: {transformed_tool_call}")
+        return transformed_tool_call
             
 
-    async def call_tool(self, tool_call: ChatCompletionMessageToolCall) -> ToolResult:
+    async def call_tool(self, tool_call: MCPCallToolRequestParams) -> ToolResult:
         tool_call_id = tool_call.id
         tool_call_name = tool_call.name
-        mcp_tool_call_request = transform_openai_tool_call_request_to_mcp_tool_call_request(openai_tool=tool_call.model_dump())
-        tool_call_arguments = mcp_tool_call_request.arguments
+        tool_call_arguments = tool_call.arguments
 
         try:
-            tool_result = await self.client.call_tool(tool_call_name, tool_call_arguments)
+            async with self.client:
+                tool_result = await self.client.call_tool(tool_call_name, tool_call_arguments)
         except ToolError as e:
-            # if the llm gives a false argument, let it know the expected format
-            if "unexpected_keyword_argument" in str(e):
-                tool_format = await self._get_tool_format(tool_call_name)
-                tool_result_content = [{
-                    "type": "text",
-                    "text": "You supplied an unexpected keyword argument to the tool. Try again with the correct arguments as specified in expected format: \n" + tool_format
-                }]
-            else:
-                # handle tool error
-                if self.on_tool_error:
-                    message = self.on_tool_error(e)
-                    if type(message) == str:
-                        tool_result_content = [{
-                            "type": "text",
-                            "text": message
-                        }]
-                    else:
-                        raise e
-                else:
-                    raise e
-        else:
-            tool_result_content = self._parse_tool_result(tool_result)
-        
-        return ToolResult(
-            tool_call_id=tool_call_id,
-            tool_call_name=tool_call_name,
-            tool_result_content=tool_result_content)
-
-        
-    def _parse_tool_result(self, tool_result: MCPCallToolResult) -> list[dict]:
-        if tool_result.structuredContent:
-            tool_result_content = [{
-                "type": "text",
-                "text": tool_result.structuredContent
-            }]
-            return tool_result_content
-        else:
-            tool_result_content = []
-            for content in tool_result.content:
-                if content.type == "text":
-                    tool_result_content.append({
+            # handle tool error
+            if self.on_tool_error:
+                on_tool_error_result = await self.on_tool_error(tool_call, e)
+                if type(on_tool_error_result) == str:
+                    tool_result_content = [{
                         "type": "text",
-                        "text": content.text
-                    })
-                elif content.type == "image":
-                    tool_result_content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{content.imageBase64}"
-                        }
-                    })
-            return tool_result_content
+                        "text": on_tool_error_result
+                    }]
+                    return ToolResult(
+                        tool_call_id=tool_call_id,
+                        tool_call_name=tool_call_name,
+                        tool_result_content=tool_result_content
+                    )
+                elif on_tool_error_result == False:
+                    self.client_logger.error(f"on_tool_error returned False, which means the tool call should be skipped")
+                    raise e
+                else:
+                    error_message = f"on_tool_error expected to return a string or False but got {type(on_tool_error_result)}: {on_tool_error_result}"
+                    self.client_logger.error(error_message)
+                    raise ValueError(error_message)
+            else:
+                raise e
+        else:
+            return self.tool_result_handler(tool_call, tool_result)
+
+    
+    def _default_tool_result_handler(self, tool_call: ChatCompletionMessageToolCall, tool_result: FastMCPCallToolResult) -> ToolResult:
+        """
+        The function transforms the fastmcp tool result to a tool result that can be used by the agent.
+        The default implementation just extracts text and image content and transforms them into a format that can directly be used as a message
+        """
+        tool_result_content = []
+        tool_result_raw_content = []
+        for content in tool_result.content:
+            tool_result_raw_content.append(content.model_dump())
+            if content.type == "text":
+                tool_result_content.append({
+                    "type": "text",
+                    "text": content.text
+                })
+            elif content.type == "image":
+                tool_result_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{content.mimeType};base64,{content.data}"
+                    }
+                })
+        return ToolResult(
+            tool_call_id=tool_call.id,
+            tool_call_name=tool_call.name,
+            tool_result_content=tool_result_content,
+            _extra={
+                "tool_result_raw_content": tool_result_raw_content
+            }
+        )
+
 
 
 
