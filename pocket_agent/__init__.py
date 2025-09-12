@@ -1,4 +1,4 @@
-from .agent import MCPAgent, AgentConfig, GenerateMessageResult, AgentEvent
-from .client import Client, ToolResult
+from .agent import PocketAgent, AgentConfig, AgentEvent, AgentHooks
+from .client import PocketAgentClient, ToolResult
 
-__all__ = ["MCPAgent", "AgentConfig", "GenerateMessageResult", "AgentEvent", "Client", "ToolResult"]
+__all__ = ["PocketAgent", "AgentConfig", "AgentEvent", "PocketAgentClient", "ToolResult", "AgentHooks"]
