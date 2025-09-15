@@ -18,7 +18,7 @@ class StreamlitAgentHooks(AgentHooks):
         super().__init__()
         self.real_time_placeholder = real_time_placeholder
     
-    def on_event(self, event: AgentEvent) -> None:
+    async def on_event(self, event: AgentEvent) -> None:
         """Handle agent events for real-time UI updates"""
         if event.event_type == "new_message":
             # Initialize agent_messages if not exists
@@ -174,6 +174,10 @@ def main():
     # Initialize agent conversation history if not exists
     if "agent_conversation_history" not in st.session_state:
         st.session_state.agent_conversation_history = []
+
+    # Initialize agent first so we can use it in the sidebar
+    real_time_placeholder = st.empty()  # Temporary placeholder
+    agent = initialize_agent(real_time_placeholder)
     
     # Sidebar with real-time activity and information
     with st.sidebar:
@@ -184,7 +188,6 @@ def main():
         st.markdown("---")  # Separator line
         
         # Initialize agent with the placeholder - agent will now get existing messages
-        agent = initialize_agent(real_time_placeholder)
         if agent is None:
             st.error("Failed to initialize the agent. Please check the configuration.")
             st.stop()
@@ -223,6 +226,9 @@ def main():
                 "content": "Hello! I'm your AI assistant. Ask me anything and I'll use the available tools to help you!"
             })
             st.rerun()
+        
+    # Re-initialize agent with the correct placeholder - agent will now get existing messages
+    agent = initialize_agent(real_time_placeholder)
     
     # Initialize session state for conversation history
     if "messages" not in st.session_state:
