@@ -1,5 +1,6 @@
 import logging
 import os
+import litellm
 
 
 def configure_logger(log_level: str = "INFO"):
@@ -17,24 +18,22 @@ def configure_logger(log_level: str = "INFO"):
         ]  
     ) 
     pocket_agent_logger = logging.getLogger("pocket_agent")
-    pocket_agent_logger.handlers = logging.getLogger().handlers  
-    pocket_agent_logger.propagate = True
+    pocket_agent_logger.handlers = logging.getLogger().handlers
+
 
     fastmcp_logger = logging.getLogger("FastMCP")  
     fastmcp_logger.handlers = logging.getLogger().handlers  
-    fastmcp_logger.propagate = True
 
     mcp_logger = logging.getLogger("mcp")  
-    mcp_logger.handlers = logging.getLogger().handlers  
-    mcp_logger.propagate = True
+    mcp_logger.handlers = logging.getLogger().handlers
 
+    if log_level == "DEBUG":
+        litellm._turn_on_debug()
     litellm_logger = logging.getLogger("LiteLLM")  
-    litellm_logger.handlers = logging.getLogger().handlers  
-    litellm_logger.propagate = True
+    litellm_logger.handlers = logging.getLogger().handlers
 
     litellm_router_logger = logging.getLogger("LiteLLM Router")  
-    litellm_router_logger.handlers = logging.getLogger().handlers  
-    litellm_router_logger.propagate = True
+    litellm_router_logger.handlers = logging.getLogger().handlers
         
         
     return pocket_agent_logger

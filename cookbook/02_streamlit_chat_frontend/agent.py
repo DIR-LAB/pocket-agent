@@ -3,8 +3,8 @@ from pocket_agent import PocketAgent
 from typing import Dict, Any
 
 
-class WeatherAgent(PocketAgent):
-    """Simple weather agent that only implements the run method"""
+class SimpleAgent(PocketAgent):
+    """Simple agent that only implements the run method"""
     
     async def run(self, user_input: str) -> Dict[str, Any]:
         """
