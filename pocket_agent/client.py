@@ -22,8 +22,6 @@ import copy
 
 
 
-
-
 @dataclass
 class ToolResult:
     tool_call_id: str
@@ -35,7 +33,7 @@ class ToolResult:
 class PocketAgentClient:
     def __init__(self, mcp_config: dict, 
                  mcp_logger: Optional[logging.Logger] = None,
-                 mcp_log_handler: Optional[Callable[[LogMessage], None]] = None,
+                 log_handler: Optional[Callable[[LogMessage], None]] = None,
                  client_logger: Optional[logging.Logger] = None,
                  on_tool_error: Optional[Callable[[ChatCompletionMessageToolCall, Exception], bool]] = None,
                  mcp_server_query_params: Optional[dict] = None,
@@ -51,7 +49,7 @@ class PocketAgentClient:
         # Separate loggers for different purposes
         self.client_logger = client_logger or logging.getLogger("pocket_agent.client")
         self.mcp_logger = mcp_logger or logging.getLogger("pocket_agent.mcp")
-        self.mcp_log_handler = mcp_log_handler or self._default_mcp_log_handler
+        self.mcp_log_handler = log_handler or self._default_mcp_log_handler
         
         
         # Pass MCP log handler to underlying MCP client

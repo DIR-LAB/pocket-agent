@@ -3,10 +3,10 @@ import os
 import litellm
 
 
-def configure_logger(log_level: str = "INFO"):
+def configure_logger(log_level: str = "DEBUG"):
     # Configure root logger with file handler only
     # read log level from environment variable
-    log_level = os.getenv("POCKET_AGENT_LOG_LEVEL", "INFO")
+    log_level = os.getenv("POCKET_AGENT_LOG_LEVEL", "DEBUG")
     log_level = log_level.upper()
     log_level = logging.getLevelNamesMapping().get(log_level, logging.INFO)
     # Add only file handler

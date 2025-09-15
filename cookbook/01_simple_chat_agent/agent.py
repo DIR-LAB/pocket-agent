@@ -16,7 +16,7 @@ class SimpleAgent(PocketAgent):
                 break
                 
             # Add user message
-            self.add_user_message(user_input)
+            await self.add_user_message(user_input)
             
              # Generates response and executes any tool calls
             step_result = await self.step()

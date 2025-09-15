@@ -11,7 +11,7 @@ class SimpleAgent(PocketAgent):
         Simple conversation loop for interactive chat.
         This method handles a single user input and generates a response.
         """
-        self.add_user_message(user_input)
+        await self.add_user_message(user_input)
         # Generate response and execute tools in a loop
         step_result = await self.step()
         while step_result.llm_message.tool_calls is not None:

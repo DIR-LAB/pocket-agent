@@ -61,17 +61,33 @@ class HookContext:
 class AgentHooks:
     """Centralized hook registry with consistent signatures"""
     
-    def pre_step(self, context: HookContext) -> None:
+    async def pre_step(self, context: HookContext) -> None:
         pass
     
-    def post_step(self, context: HookContext) -> None:
+    async def post_step(self, context: HookContext) -> None:
         pass
     
-    def pre_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams) -> Optional[MCPCallToolRequestParams]:
+    async def pre_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams) -> Optional[MCPCallToolRequestParams]:
         return None
     
-    def post_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams, result: ToolResult) -> Optional[ToolResult]:
+    async def post_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams, result: ToolResult) -> Optional[ToolResult]:
         return result  # Return modified or None to indicate error
+
+    async def on_llm_response(self, context: HookContext, response: LitellmModelResponse) -> None:
+        pass
+    
+    async def on_event(self, event: AgentEvent) -> None:
+        from .utils.console_formatter import ConsoleFormatter
+        formatter = ConsoleFormatter()
+        formatter.format_event(event)
+
+    #########################################################
+    # The following 2 hooks run in the PocketAgentClient
+    #########################################################
+
+    # tool result handler will replace the default tool result handler in PocketAgentClient if implemented
+    # async def on_tool_result(self, context: HookContext, tool_call: ChatCompletionMessageToolCall, tool_result: FastMCPCallToolResult) -> ToolResult:
+    #     pass
     
     async def on_tool_error(self, context: HookContext, tool_call: MCPCallToolRequestParams, error: Exception) -> Union[str, False]:
         if "unexpected_keyword_argument" in str(error):
@@ -80,14 +96,6 @@ class AgentHooks:
             return "You supplied an unexpected keyword argument to the tool. \
                 Try again with the correct arguments as specified in expected format: \n" + tool_format
         return False
-
-    def on_llm_response(self, context: HookContext, response: LitellmModelResponse) -> None:
-        pass
-    
-    def on_event(self, event: AgentEvent) -> None:
-        from .utils.console_formatter import ConsoleFormatter
-        formatter = ConsoleFormatter()
-        formatter.format_event(event)
 
 
 
@@ -106,10 +114,10 @@ class PocketAgent:
         else:
             self.llm_completion_handler = litellm
         self.agent_config = agent_config
+        self.hooks = hooks or AgentHooks()
         self.mcp_client = self._init_client(mcp_config, **client_kwargs)
         self.system_prompt = agent_config.system_prompt or ""
         self.messages = agent_config.messages or []
-        self.hooks = hooks or AgentHooks()
         self.logger.info(f"Initializing MCPAgent with agent_id={self.agent_id}, model={agent_config.llm_model}")
         self.logger.info(f"MCPAgent initialized successfully with {len(self.messages)} initial messages")
 
@@ -117,21 +125,24 @@ class PocketAgent:
     def _init_client(self, mcp_config: dict, **client_kwargs):
         """
         Initialize the most basic MCP client with the given configuration.
-        Override this to add custom client handlers. More docs can be found here:
-         - Elicitation handler: https://gofastmcp.com/clients/elicitation
-         - Progress handler: https://gofastmcp.com/clients/progress
-         - Sampling handler: https://gofastmcp.com/clients/sampling
-         - Message handler: https://gofastmcp.com/clients/message
-         - Logging handler: https://gofastmcp.com/clients/logging (pass as mcp_log_handler to Client)
+        Override this to add custom client handlers.
         """
+        # check if on_tool_result is in hooks class
+        if hasattr(self.hooks, "on_tool_result"):
+            tool_result_handler = self.create_wrapper_with_context(self.hooks.on_tool_result)
+        else:
+            tool_result_handler = None
+        
         return PocketAgentClient(mcp_config=mcp_config,
-                     on_tool_error=self._tool_error_wrapper,
+                     on_tool_error=self.create_wrapper_with_context(self.hooks.on_tool_error),
+                     tool_result_handler=tool_result_handler,
                      **client_kwargs)
-    
-    def _tool_error_wrapper(self, tool_call: MCPCallToolRequestParams, error: Exception) -> Union[str, False]:
-        hook_context = self._create_hook_context()
-        return self.hooks.on_tool_error(hook_context, tool_call, error)
-    
+
+    def create_wrapper_with_context(self, func: Callable) -> Callable:
+        async def wrapper(*args, **kwargs):
+            hook_context = self._create_hook_context()
+            return await func(hook_context, *args, **kwargs)
+        return wrapper
 
     def _format_messages(self) -> list[dict]:
         # format system prompt and messages in proper format
@@ -170,18 +181,18 @@ class PocketAgent:
     
 
 
-    def add_message(self, message: dict) -> None:
+    async def add_message(self, message: dict) -> None:
         self.logger.debug(f"Adding message: {message}")
         event = AgentEvent(event_type="new_message", data=message)
-        self.hooks.on_event(event)
+        await self.hooks.on_event(event)
         self.messages.append(message)
 
     
-    def add_llm_message(self, llm_message: LitellmMessage) -> None:
-        self.add_message(llm_message.model_dump())
+    async def add_llm_message(self, llm_message: LitellmMessage) -> None:
+        await self.add_message(llm_message.model_dump())
 
-    def add_tool_result_message(self, tool_result_message: dict) -> None:
-        self.add_message(tool_result_message)
+    async def add_tool_result_message(self, tool_result_message: dict) -> None:
+        await self.add_message(tool_result_message)
 
 
     def _filter_images_from_tool_result_content(self, tool_result_content: list[dict]) -> list[dict]:
@@ -193,12 +204,12 @@ class PocketAgent:
         """Execute a single tool call with hooks."""
         hook_context = self._create_hook_context()
     
-        transformed_tool_call = self.hooks.pre_tool_call(hook_context, tool_call)
+        transformed_tool_call = await self.hooks.pre_tool_call(hook_context, tool_call)
         if transformed_tool_call is not None:
             tool_call = transformed_tool_call
         try:
             result = await self.mcp_client.call_tool(tool_call)
-            transformed_result = self.hooks.post_tool_call(hook_context, tool_call, result)
+            transformed_result = await self.hooks.post_tool_call(hook_context, tool_call, result)
             if transformed_result is not None:
                 result = transformed_result
             return result
@@ -220,14 +231,14 @@ class PocketAgent:
     async def step(self, **override_completion_kwargs) -> dict:
         self.logger.debug("Starting agent step")
         hook_context = self._create_hook_context()
-        self.hooks.pre_step(hook_context)
+        await self.hooks.pre_step(hook_context)
         
         step_result = None
         try:
             llm_response = await self._get_llm_response(**override_completion_kwargs)
-            self.hooks.on_llm_response(hook_context, llm_response)
+            await self.hooks.on_llm_response(hook_context, llm_response)
             llm_message = llm_response.choices[0].message
-            self.add_llm_message(llm_message)
+            await self.add_llm_message(llm_message)
             if llm_message.tool_calls:
                 tool_names = [
                     tool_call.get('function', {}).get('name', 'unknown') 
@@ -251,7 +262,7 @@ class PocketAgent:
                             "name": tool_call_name,
                             "content": tool_result_content
                         }
-                        self.add_tool_result_message(new_message)
+                        await self.add_tool_result_message(new_message)
                         step_result = StepResult(llm_message=llm_message, tool_execution_results=tool_execution_results)
                 else:
                     self.logger.error("No tool execution results received")
@@ -264,7 +275,7 @@ class PocketAgent:
             raise
         finally:
             # Post-step hook
-            self.hooks.post_step(hook_context)
+            await self.hooks.post_step(hook_context)
             
             if step_result is None:
                 self.logger.debug("Step result is None")
@@ -272,7 +283,7 @@ class PocketAgent:
 
     
 
-    def add_user_message(self, user_message: str, image_base64s: Optional[list[str]] = None) -> None:
+    async def add_user_message(self, user_message: str, image_base64s: Optional[list[str]] = None) -> None:
         image_count = len(image_base64s) if image_base64s else 0
         self.logger.info(f"Adding user message: {user_message} with {image_count} images")
         new_message_content = [
@@ -295,7 +306,7 @@ class PocketAgent:
                             "url": f"data:image/jpeg;base64,{image_base64}"
                         }
                     })
-        self.add_message({
+        await self.add_message({
             "role": "user",
             "content": new_message_content
         })
