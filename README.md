@@ -311,7 +311,7 @@ config = AgentConfig(llm_model="azure/gpt-4")
 ```
 
 ### 🚏 **LiteLLM Router Integration**
-To easily set rate limits or implement load balancing with multiple LLM API providers you can pass a LiteLLM Router instance to PocketAgent:
+To easily set rate limits or implement load balancing with multiple LLM API providers you can pass a [LiteLLM Router](https://docs.litellm.ai/docs/routing) instance to PocketAgent:
 
 ```python
 from litellm import Router
