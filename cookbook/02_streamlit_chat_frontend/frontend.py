@@ -3,23 +3,13 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from litellm import Router
 import litellm
-from agent import WeatherAgent
+from agent import SimpleAgent
 from pocket_agent import AgentConfig, AgentEvent, AgentHooks
 import threading
 import time
 
-# Get current directory where this frontend.py file is located
-current_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Load router configuration
-router_config_path = os.path.join(current_dir, "..", "sample_router.json")
-with open(router_config_path, 'r') as f:
-    router_config = json.load(f)
-
-# Create litellm router
-litellm_router = Router(model_list=router_config["models"])
 
 class StreamlitAgentHooks(AgentHooks):
     """Custom hooks for Streamlit real-time updates"""
@@ -94,12 +84,11 @@ class StreamlitAgentHooks(AgentHooks):
                     elif msg["type"] == "tool_result":
                         st.success(msg["content"])
 
-def initialize_agent(real_time_placeholder):
-    """Initialize the weather agent with proper configuration"""
-    try:
 
-        
-        # MCP server configuration - simple and clean
+
+def initialize_agent(real_time_placeholder):
+    """Initialize the agent with proper configuration"""
+    try:
         mcp_config = {
             "mcpServers": {
                 "weather": {
@@ -117,7 +106,7 @@ def initialize_agent(real_time_placeholder):
         # Agent configuration with existing messages
         config = AgentConfig(
             llm_model="gpt-5-nano",
-            system_prompt="You are a helpful weather assistant. Use the available weather tools to provide accurate weather information. Be friendly and conversational.",
+            system_prompt="You are a helpful assistant. Use the available tools to provide accurate responses. Be friendly and conversational.",
             messages=existing_messages  # Pass existing conversation history
         )
         
@@ -125,10 +114,9 @@ def initialize_agent(real_time_placeholder):
         hooks = StreamlitAgentHooks(real_time_placeholder)
         
         # Create agent with the custom hooks
-        agent = WeatherAgent(
+        agent = SimpleAgent(
             agent_config=config,
             mcp_config=mcp_config,
-            router=litellm_router,
             hooks=hooks
         )
         
@@ -136,6 +124,25 @@ def initialize_agent(real_time_placeholder):
     except Exception as e:
         st.error(f"Failed to initialize agent: {str(e)}")
         return None
+
+async def get_tools_from_agent(agent):
+    """Get available tools from the agent"""
+    try:
+        tools = await agent.mcp_client.get_tools(format="mcp")
+        
+        # Format tools for display
+        tools_info = []
+        for tool in tools:
+            tool_info = {
+                "name": tool.name,
+                "description": tool.description or "No description available"
+            }
+            tools_info.append(tool_info)
+            
+        return tools_info
+    except Exception as e:
+        st.error(f"Failed to fetch available tools: {str(e)}")
+        return []
 
 def run_async_agent_response(agent, user_input):
     """Run the agent response in a proper async context"""
@@ -156,13 +163,13 @@ def run_async_agent_response(agent, user_input):
 
 def main():
     st.set_page_config(
-        page_title="Weather Chat Assistant",
-        page_icon="🌤️",
+        page_title="Chat Assistant",
+        page_icon="💬",
         layout="wide"
     )
     
-    st.title("🌤️ Weather Chat Assistant")
-    st.markdown("Ask me about the weather in any city! Watch as I think and use tools in real-time.")
+    st.title("💬 Chat Assistant")
+    st.markdown("Ask me about anything! Watch as I think and use tools in real-time.")
     
     # Initialize agent conversation history if not exists
     if "agent_conversation_history" not in st.session_state:
@@ -176,40 +183,53 @@ def main():
         
         st.markdown("---")  # Separator line
         
-        st.markdown("### Available Weather Tools")
-        st.markdown("""
-        - **Current Weather**: Ask about current weather in any city
-        - **Weather Forecast**: Get multi-day forecasts
-        - **Weather Comparison**: Compare weather between two cities
+        # Initialize agent with the placeholder - agent will now get existing messages
+        agent = initialize_agent(real_time_placeholder)
+        if agent is None:
+            st.error("Failed to initialize the agent. Please check the configuration.")
+            st.stop()
         
-        ### Example Queries
-        - "What's the weather like in London?"
-        - "Give me a 5-day forecast for Tokyo"
-        - "Compare the weather in New York and Paris"
+        # Dynamic tools section - get tools from the initialized agent
+        st.markdown("### Available Tools:")
+        try:
+            tools_info = asyncio.run(get_tools_from_agent(agent))
+            
+            if tools_info:
+                tools_markdown = ""
+                for tool in tools_info:
+                    tools_markdown += f"- **{tool['name']}**: {tool['description']}\n"
+                st.markdown(tools_markdown)
+            else:
+                st.markdown("*No tools available or unable to load tools*")
+        except Exception as e:
+            st.markdown(f"*Error loading tools: {str(e)}*")
+        
+        st.markdown("---")
+        
+        st.markdown("### Tips:")
+        st.markdown("""
+        - Ask specific questions to get better results
+        - The assistant can use multiple tools to help you
+        - Watch the real-time activity above to see what's happening
         """)
         
         if st.button("Clear Conversation"):
             st.session_state.messages = []
             st.session_state.agent_messages = []
+            st.session_state.agent_conversation_history = []
             real_time_placeholder.empty()
             st.session_state.messages.append({
                 "role": "assistant", 
-                "content": "Hello! I'm your weather assistant. Ask me about the weather in any city, get forecasts, or compare weather between cities!"
+                "content": "Hello! I'm your AI assistant. Ask me anything and I'll use the available tools to help you!"
             })
             st.rerun()
-    
-    # Initialize agent with the placeholder - agent will now get existing messages
-    agent = initialize_agent(real_time_placeholder)
-    if agent is None:
-        st.error("Failed to initialize the weather agent. Please check the configuration.")
-        st.stop()
     
     # Initialize session state for conversation history
     if "messages" not in st.session_state:
         st.session_state.messages = []
         st.session_state.messages.append({
             "role": "assistant", 
-            "content": "Hello! I'm your weather assistant. Ask me about the weather in any city, get forecasts, or compare weather between cities!"
+            "content": "Hello! I'm your AI assistant. Ask me anything and I'll use the available tools to help you!"
         })
     
     # Initialize agent messages for real-time display
@@ -222,7 +242,7 @@ def main():
             st.markdown(message["content"])
     
     # Chat input
-    if prompt := st.chat_input("Ask about the weather..."):
+    if prompt := st.chat_input("Ask me anything..."):
         # Add user message to conversation
         st.session_state.messages.append({"role": "user", "content": prompt})
         
@@ -232,7 +252,7 @@ def main():
         
         # Get agent response with real-time updates
         with st.chat_message("assistant"):
-            with st.spinner("Getting weather information..."):
+            with st.spinner("Thinking and using tools..."):
                 try:
                     # The event handler will update the real_time_placeholder during execution
                     response = run_async_agent_response(agent, prompt)

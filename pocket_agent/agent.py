@@ -38,7 +38,6 @@ class AgentConfig:
     """Configuration class to make agent setup cleaner"""
     llm_model: str
     agent_id: Optional[str] = None
-    context_id: Optional[str] = None
     system_prompt: Optional[str] = None
     messages: Optional[list[dict]] = None
     allow_images: Optional[bool] = False
@@ -98,25 +97,24 @@ class PocketAgent:
                  mcp_config: dict,
                  router: Router = None,
                  logger: Optional[logging.Logger] = None,
-                 hooks: Optional[AgentHooks] = None):
-        
-        self.logger = logger or configure_pocket_agent_logger()
-        self.context_id = agent_config.context_id or str(uuid.uuid4())
+                 hooks: Optional[AgentHooks] = None,
+                 **client_kwargs):
         self.agent_id = agent_config.agent_id or str(uuid.uuid4())
+        self.logger = logger or configure_pocket_agent_logger()
         if router:
             self.llm_completion_handler = router
         else:
             self.llm_completion_handler = litellm
         self.agent_config = agent_config
-        self.mcp_client = self._init_client(mcp_config)
+        self.mcp_client = self._init_client(mcp_config, **client_kwargs)
         self.system_prompt = agent_config.system_prompt or ""
         self.messages = agent_config.messages or []
         self.hooks = hooks or AgentHooks()
-        self.logger.info(f"Initializing MCPAgent with agent_id={self.agent_id}, context_id={self.context_id}, model={agent_config.llm_model}")
+        self.logger.info(f"Initializing MCPAgent with agent_id={self.agent_id}, model={agent_config.llm_model}")
         self.logger.info(f"MCPAgent initialized successfully with {len(self.messages)} initial messages")
 
 
-    def _init_client(self, mcp_config: dict):
+    def _init_client(self, mcp_config: dict, **client_kwargs):
         """
         Initialize the most basic MCP client with the given configuration.
         Override this to add custom client handlers. More docs can be found here:
@@ -127,7 +125,8 @@ class PocketAgent:
          - Logging handler: https://gofastmcp.com/clients/logging (pass as mcp_log_handler to Client)
         """
         return PocketAgentClient(mcp_config=mcp_config,
-                     on_tool_error=self._tool_error_wrapper)
+                     on_tool_error=self._tool_error_wrapper,
+                     **client_kwargs)
     
     def _tool_error_wrapper(self, tool_call: MCPCallToolRequestParams, error: Exception) -> Union[str, False]:
         hook_context = self._create_hook_context()
@@ -261,7 +260,7 @@ class PocketAgent:
                 self.logger.debug("No tool calls in generate result")
                 step_result = StepResult(llm_message=llm_message)
         except Exception as e:
-            self.logger.error(f"Error in step: {e}")
+            self.logger.error(f"Error in step: {traceback.format_exc()}")
             raise
         finally:
             # Post-step hook
