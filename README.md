@@ -13,6 +13,28 @@
 
 ---
 
+## Table of Contents
+
+- [Why Pocket Agent?](#why-pocket-agent)
+- [Design Principles](#design-principles)
+- [Cookbook](#-cookbook)
+- [Installation](#installation)
+- [Creating Your First Pocket-Agent (Quick Start)](#creating-your-first-pocket-agent-quick-start)
+- [Building Pocket-Agents with Agents](#building-pocket-agents-with-agents)
+- [Core Concepts](#core-concepts)
+  - [PocketAgent Base Class](#️-pocketagent-base-class)
+  - [The Step Method](#-the-step-method)
+  - [Message Management](#-message-management)
+  - [Hook System](#-hook-system)
+  - [Event System](#-event-system)
+  - [Multi-Model Support](#-multi-model-support)
+  - [LiteLLM Router Integration](#-litellm-router-integration)
+  - [PocketAgentClient](#pocketagentclient)
+- [Testing](#testing)
+- [Feature Roadmap](#feature-roadmap)
+
+---
+
 ## Why Pocket Agent?
 
 Most agent frameworks are severely over-bloated. The reason for this is that they are trying to support too many things at once and make every possible agent implementation "simple". This only works until it doesn't and you are stuck having to understand the enormous code base to implement what should be a very simple feature.
