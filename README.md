@@ -110,6 +110,9 @@ agent = SimpleAgent(
 await agent.run()
 ```
 
+## Building Pocket-Agents with Agents
+If you are using an agent (i.e. cursor, claude) to your PocketAgent, you can provide the agent with the [llm.md](./llm.md) as useful documentation.
+
 
 ## Core Concepts
 
