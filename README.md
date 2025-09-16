@@ -6,6 +6,7 @@
 
 <p><em>A lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support</em></p>
 
+[![PyPI - Version](https://img.shields.io/pypi/v/fastmcp.svg)](https://pypi.org/project/pocket-agent/)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 </div>
