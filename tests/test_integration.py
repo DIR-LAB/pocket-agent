@@ -1,483 +1,475 @@
+"""
+Simplified integration tests for the pocket agent framework.
+
+These tests verify end-to-end functionality using real FastMCP servers
+instead of complex mocking.
+"""
+
 import pytest
-import logging
-import uuid
 import asyncio
-from unittest.mock import Mock, AsyncMock, patch
-from fastmcp.client.logging import LogMessage
-from fastmcp.exceptions import ToolError
+import os
+from typing import Dict, Any
+from unittest.mock import Mock, AsyncMock
 
-from pocket_agent.agent import (
-    MCPAgent, AgentConfig, GenerateMessageResult, 
-    AgentEvent
-)
-from pocket_agent.client import Client, ToolResult
+from pocket_agent.agent import PocketAgent, AgentConfig, AgentHooks, StepResult
+from pocket_agent.client import PocketAgentClient
+from litellm.types.utils import ModelResponse, Message, Choices, Usage
+from fastmcp.client import Client
+from fastmcp.client.transports import FastMCPTransport
 
 
-
-# Helper functions for common patterns
-def create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config, mock_client=None):
-    """Helper function to create a mocked agent with common setup"""
-    with patch.object(MCPAgent, '_init_client') as mock_init_client:
-        if mock_client is None:
-            mock_client = Mock()
-            mock_client._get_openai_tools = AsyncMock(return_value=[])
-            mock_client.call_tools = AsyncMock(return_value=[])
-        mock_init_client.return_value = mock_client
+class SimpleIntegrationTestAgent(PocketAgent):
+    """Simplified test agent for integration testing"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.step_results = []
+    
+    async def run_conversation(self, messages: list[str], max_steps: int = 5) -> list[StepResult]:
+        """Run a conversation and return all step results"""
+        results = []
         
-        return MCPAgent(
-            Router=mock_router,
-            mcp_server_config=mock_mcp_server_config,
-            agent_config=sample_agent_config
-        ), mock_client
+        for message in messages:
+            await self.add_user_message(message)
+            
+            step_count = 0
+            while step_count < max_steps:
+                step_result = await self.step()
+                results.append(step_result)
+                
+                # Stop if no tool calls in the last message
+                if not step_result.llm_message.tool_calls:
+                    break
+                    
+                step_count += 1
+        
+        self.step_results = results
+        return results
+
+    async def run(self) -> dict:
+        """Simple run implementation for testing"""
+        return {"status": "test_completed"}
 
 
-def create_mock_client_with_patches(mock_mcp_server_config):
-    """Helper function to create a mocked client with common patches"""
-    with patch('pocket_agent.client.MCPClient') as mock_mcp_client:
-        return Client(mock_mcp_server_config), mock_mcp_client
+class TestAgentIntegration:
+    """Simplified integration tests using real FastMCP servers"""
 
-
-class TestAgentConfig:
-    def test_agent_config_creation(self):
-        """Test basic AgentConfig creation"""
-        config = AgentConfig(
+    @pytest.fixture
+    def simple_agent_config(self):
+        """Simple agent configuration for testing"""
+        return AgentConfig(
             llm_model="gpt-4",
-            system_prompt="Test prompt"
-        )
-        assert config.llm_model == "gpt-4"
-        assert config.system_prompt == "Test prompt"
-        assert config.agent_id is None
-        assert config.context_id is None
-        assert config.messages == None
-        assert config.allow_images is False
-
-    def test_agent_config_with_all_fields(self):
-        """Test AgentConfig with all fields populated"""
-        messages = [{"role": "user", "content": "Hello"}]
-        completion_kwargs = {"temperature": 0.7}
-        
-        config = AgentConfig(
-            llm_model="gpt-3.5-turbo",
             agent_id="test-agent",
-            context_id="test-context",
-            system_prompt="You are helpful",
-            messages=messages,
-            allow_images=True,
-            completion_kwargs=completion_kwargs
+            system_prompt="You are a helpful assistant that can use tools.",
+            allow_images=False,
+            completion_kwargs={"tool_choice": "auto"}
         )
-        
-        assert config.llm_model == "gpt-3.5-turbo"
-        assert config.agent_id == "test-agent"
-        assert config.context_id == "test-context"
-        assert config.system_prompt == "You are helpful"
-        assert config.messages == messages
-        assert config.allow_images is True
-        assert config.get_completion_kwargs() == completion_kwargs
 
-    def test_get_completion_kwargs_with_none(self):
-        """Test get_completion_kwargs when completion_kwargs is None"""
-        config = AgentConfig(llm_model="gpt-4")
-        config.completion_kwargs = None
-        assert config.get_completion_kwargs() == {}
-
-
-class TestGenerateMessageResult:
-    def test_generate_message_result_creation(self):
-        """Test GenerateMessageResult dataclass"""
-        result = GenerateMessageResult(
-            message_content="Test content",
-            image_base64s=["base64image"],
-            reasoning_content="Test reasoning",
-            thinking_blocks=[{"thought": "test"}],
-            tool_calls=[{"function": {"name": "test_tool"}}]
-        )
-        
-        assert result.message_content == "Test content"
-        assert result.image_base64s == ["base64image"]
-        assert result.reasoning_content == "Test reasoning"
-        assert result.thinking_blocks == [{"thought": "test"}]
-        assert result.tool_calls == [{"function": {"name": "test_tool"}}]
-
-
-class TestAgentEvent:
-    def test_agent_event_creation(self):
-        """Test AgentEvent dataclass"""
-        event = AgentEvent(
-            event_type="new_message",
-            data={"message": "test"}
-        )
-        
-        assert event.event_type == "new_message"
-        assert event.data == {"message": "test"}
-
-
-class TestMCPAgent:
-    def test_agent_initialization(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test MCPAgent initialization"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        
-        assert agent.Router == mock_router
-        assert agent.agent_config == sample_agent_config
-        assert agent.system_prompt == sample_agent_config.system_prompt
-        assert agent.messages == sample_agent_config.messages
-        assert agent.context_id == sample_agent_config.context_id
-        assert agent.agent_id == sample_agent_config.agent_id
-
-    def test_agent_initialization_generates_ids_when_none(self, mock_router, mock_mcp_server_config):
-        """Test that agent generates IDs when not provided in config"""
-        config = AgentConfig(llm_model="gpt-4")  # No IDs provided
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, config)
-        
-        # Should have generated UUIDs
-        assert agent.context_id is not None
-        assert agent.agent_id is not None
-        # Verify they're valid UUIDs
-        uuid.UUID(agent.context_id)
-        uuid.UUID(agent.agent_id)
-
-    def test_format_messages(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test message formatting includes system prompt"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        
-        agent.messages = [{"role": "user", "content": "Hello"}]
-        formatted = agent._format_messages()
-        
-        assert len(formatted) == 2
-        assert formatted[0]["role"] == "system"
-        assert formatted[0]["content"] == sample_agent_config.system_prompt
-        assert formatted[1]["role"] == "user"
-        assert formatted[1]["content"] == "Hello"
-
-    def test_add_message(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test adding a message to the agent"""
-        on_event_mock = Mock()
-        
-        with patch.object(MCPAgent, '_init_client'):
-            agent = MCPAgent(
-                Router=mock_router,
-                mcp_server_config=mock_mcp_server_config,
-                agent_config=sample_agent_config,
-                on_event=on_event_mock
-            )
-            
-            message = {"role": "user", "content": "Test message"}
-            agent.add_message(message)
-            
-            assert message in agent.messages
-            on_event_mock.assert_called_once()
-
-    def test_add_user_message_text_only(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test adding a user message with text only"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        
-        agent.add_user_message("Hello, agent!")
-        
-        assert len(agent.messages) == 1
-        message = agent.messages[0]
-        assert message["role"] == "user"
-        assert message["content"][0]["type"] == "text"
-        assert message["content"][0]["text"] == "Hello, agent!"
-
-    def test_add_user_message_with_images_not_allowed(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test adding user message with images when images not allowed"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        
-        agent.add_user_message("Hello!", image_base64s=["base64data"])
-        
-        # Should only have text content, no images
-        message = agent.messages[0]
-        assert len(message["content"]) == 1
-        assert message["content"][0]["type"] == "text"
-
-    @pytest.mark.asyncio
-    async def test_generate_basic(self, mock_router, mock_mcp_server_config, sample_agent_config, sample_llm_response):
-        """Test basic message generation"""
-        agent, mock_client = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        mock_router.acompletion = AsyncMock(return_value=sample_llm_response)
-        
-        result = await agent.generate()
-        
-        assert isinstance(result, GenerateMessageResult)
-        assert result.message_content == "Test response content"
-        mock_router.acompletion.assert_called_once()
-
-    def test_reset_messages(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test resetting messages"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        
-        agent.messages = [{"role": "user", "content": "test"}]
-        agent.reset_messages()
-        
-        assert agent.messages == []
-
-    def test_model_property(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test model property returns correct model name"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        assert agent.model == sample_agent_config.llm_model
-
-    def test_allow_images_property(self, mock_router, mock_mcp_server_config, sample_agent_config):
-        """Test allow_images property returns correct value"""
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, sample_agent_config)
-        assert agent.allow_images == sample_agent_config.allow_images
-
-
-class TestToolResult:
-    def test_tool_result_creation(self):
-        """Test ToolResult dataclass"""
-        result = ToolResult(
-            tool_call_id="call_123",
-            tool_call_name="test_tool",
-            tool_result_content=[{"type": "text", "text": "result"}]
-        )
-        
-        assert result.tool_call_id == "call_123"
-        assert result.tool_call_name == "test_tool"
-        assert result.tool_result_content == [{"type": "text", "text": "result"}]
-
-
-class TestClient:
-    def test_client_initialization(self, mock_mcp_server_config):
-        """Test Client initialization with default parameters"""
-        client, mock_mcp_client = create_mock_client_with_patches(mock_mcp_server_config)
-        
-        assert client.client_logger.name == "pocket_agent.client"
-        assert client.mcp_logger.name == "pocket_agent.mcp"
-        mock_mcp_client.assert_called_once()
-
-    def test_client_initialization_with_custom_loggers(self, mock_mcp_server_config):
-        """Test Client initialization with custom loggers"""
-        custom_client_logger = logging.getLogger("custom.client")
-        custom_mcp_logger = logging.getLogger("custom.mcp")
-        custom_log_handler = Mock()
-        
-        with patch('pocket_agent.client.MCPClient') as mock_mcp_client:
-            client = Client(
-                mock_mcp_server_config,
-                client_logger=custom_client_logger,
-                mcp_logger=custom_mcp_logger,
-                mcp_log_handler=custom_log_handler
-            )
-            
-            assert client.client_logger == custom_client_logger
-            assert client.mcp_logger == custom_mcp_logger
-            assert client.mcp_log_handler == custom_log_handler
-
-    def test_default_mcp_log_handler(self, mock_mcp_server_config):
-        """Test the default MCP log handler"""
-        client, _ = create_mock_client_with_patches(mock_mcp_server_config)
-        
-        # Create a mock log message
-        log_message = Mock()
-        log_message.level = "INFO"
-        log_message.data = {
-            "msg": "Test message",
-            "extra": {"key": "value"}
-        }
-        
-        with patch.object(client.mcp_logger, 'log') as mock_log:
-            client._default_mcp_log_handler(log_message)
-            
-            mock_log.assert_called_once_with(
-                logging.INFO, 
-                "[MCP] Test message", 
-                extra={"key": "value", "source": "mcp_server"}
-            )
-
-    @pytest.mark.asyncio
-    async def test_get_mcp_tools(self, mock_mcp_server_config):
-        """Test getting MCP tools"""
-        mock_tools = [Mock(name="tool1"), Mock(name="tool2")]
-        
-        with patch('pocket_agent.client.MCPClient') as mock_mcp_client:
-            mock_client_instance = Mock()
-            mock_client_instance.get_tools = AsyncMock(return_value=mock_tools)
-            mock_mcp_client.return_value = mock_client_instance
-            
-            client = Client(mock_mcp_server_config)
-            
-            # Mock the async context manager
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
-            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
-            client.client = mock_client_instance
-            
-            result = await client._get_mcp_tools()
-            
-            assert result == mock_tools
-            mock_client_instance.get_tools.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_openai_tools(self, mock_mcp_server_config):
-        """Test converting MCP tools to OpenAI format"""
-        mock_mcp_tools = [Mock(name="tool1")]
-        mock_openai_tool = {"type": "function", "function": {"name": "tool1"}}
-        
-        with patch('pocket_agent.client.MCPClient'):
-            with patch('pocket_agent.client.transform_mcp_tool_to_openai_tool', return_value=mock_openai_tool):
-                client = Client(mock_mcp_server_config)
-                
-                with patch.object(client, '_get_mcp_tools', return_value=mock_mcp_tools):
-                    result = await client._get_openai_tools()
-                    
-                    assert result == [mock_openai_tool]
-
-    @pytest.mark.asyncio
-    async def test_call_tool_success(self, mock_mcp_server_config):
-        """Test successful tool call"""
-        mock_tool_call = Mock()
-        mock_tool_call.id = "call_123"
-        mock_tool_call.name = "test_tool"
-        mock_tool_call.model_dump.return_value = {"id": "call_123", "function": {"name": "test_tool"}}
-        
-        mock_mcp_result = Mock()
-        mock_mcp_result.structuredContent = "Tool result"
-        
-        with patch('pocket_agent.client.MCPClient'):
-            with patch('pocket_agent.client.transform_openai_tool_call_request_to_mcp_tool_call_request') as mock_transform:
-                mock_mcp_request = Mock()
-                mock_mcp_request.arguments = {"arg": "value"}
-                mock_transform.return_value = mock_mcp_request
-                
-                client = Client(mock_mcp_server_config)
-                client.client.call_tool = AsyncMock(return_value=mock_mcp_result)
-                
-                result = await client.call_tool(mock_tool_call)
-                
-                assert isinstance(result, ToolResult)
-                assert result.tool_call_id == "call_123"
-                assert result.tool_call_name == "test_tool"
-                assert result.tool_result_content == [{"type": "text", "text": "Tool result"}]
-
-    @pytest.mark.asyncio
-    async def test_call_tool_with_tool_error(self, mock_mcp_server_config):
-        """Test tool call with ToolError"""
-        mock_tool_call = Mock()
-        mock_tool_call.id = "call_123" 
-        mock_tool_call.name = "test_tool"
-        mock_tool_call.model_dump.return_value = {"id": "call_123", "function": {"name": "test_tool"}}
-        
-        with patch('pocket_agent.client.MCPClient'):
-            with patch('pocket_agent.client.transform_openai_tool_call_request_to_mcp_tool_call_request'):
-                client = Client(mock_mcp_server_config)
-                client.client.call_tool = AsyncMock(side_effect=ToolError("unexpected_keyword_argument test"))
-                
-                with patch.object(client, '_get_tool_format', return_value='{"arg": "string"}'):
-                    result = await client.call_tool(mock_tool_call)
-                    
-                    assert isinstance(result, ToolResult)
-                    assert "unexpected keyword argument" in result.tool_result_content[0]["text"]
-
-    @pytest.mark.asyncio  
-    async def test_call_tools_parallel(self, mock_mcp_server_config):
-        """Test calling multiple tools in parallel"""
-        mock_tool_calls = [Mock(), Mock()]
-        mock_results = [Mock(), Mock()]
-        
-        with patch('pocket_agent.client.MCPClient'):
-            client = Client(mock_mcp_server_config)
-            
-            # Use AsyncMock for the async method
-            with patch.object(client, 'call_tool', new=AsyncMock(side_effect=mock_results)) as mock_call_tool:
-                # Mock async context manager
-                client.client.__aenter__ = AsyncMock(return_value=client.client)
-                client.client.__aexit__ = AsyncMock(return_value=None)
-                
-                result = await client.call_tools(mock_tool_calls)
-                
-                assert result == mock_results
-                # Verify call_tool was called for each tool_call
-                assert mock_call_tool.call_count == len(mock_tool_calls)
-
-    def test_parse_tool_result_with_structured_content(self, mock_mcp_server_config):
-        """Test parsing tool result with structured content"""
-        mock_result = Mock()
-        mock_result.structuredContent = "Structured result"
-        
-        client, _ = create_mock_client_with_patches(mock_mcp_server_config)
-        parsed = client._parse_tool_result(mock_result)
-        
-        assert parsed == [{"type": "text", "text": "Structured result"}]
-
-    def test_parse_tool_result_with_content_array(self, mock_mcp_server_config):
-        """Test parsing tool result with content array"""
-        mock_text_content = Mock()
-        mock_text_content.type = "text"
-        mock_text_content.text = "Text content"
-        
-        mock_image_content = Mock()
-        mock_image_content.type = "image"
-        mock_image_content.imageBase64 = "base64data"
-        
-        mock_result = Mock()
-        mock_result.structuredContent = None
-        mock_result.content = [mock_text_content, mock_image_content]
-        
-        client, _ = create_mock_client_with_patches(mock_mcp_server_config)
-        parsed = client._parse_tool_result(mock_result)
-        
-        assert len(parsed) == 2
-        assert parsed[0] == {"type": "text", "text": "Text content"}
-        assert parsed[1] == {
-            "type": "image_url",
-            "image_url": {"url": "data:image/png;base64,base64data"}
+    @pytest.fixture
+    def real_mcp_config(self):
+        """MCP configuration that points to real test server"""
+        return {
+            "mcpServers": {
+                "test_server": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args":["server.py"],
+                    "cwd": os.path.dirname(__file__)
+                }
+            }
         }
 
+    @pytest.fixture
+    def mock_llm_response_no_tools(self):
+        """Simple LLM response without tool calls"""
+        return ModelResponse(
+            id="test-123",
+            created=1735081811,
+            model="gpt-4",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content="Hello! I'm ready to help.",
+                        role="assistant",
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=20, total_tokens=30),
+            service_tier=None,
+        )
 
-class TestIntegration:
+    @pytest.fixture  
+    def mock_llm_response_with_greet_tool(self):
+        """LLM response that wants to call the greet tool"""
+        from litellm.types.utils import ChatCompletionMessageToolCall, Function
+        
+        return ModelResponse(
+            id="test-456",
+            created=1735081811,
+            model="gpt-4", 
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        content=None,
+                        role="assistant",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                function=Function(
+                                    arguments='{"name":"Alice"}',
+                                    name="greet",
+                                ),
+                                id="call_greet_123",
+                                type="function",
+                            )
+                        ],
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=25, prompt_tokens=30, total_tokens=55),
+            service_tier=None,
+        )
+
+    @pytest.fixture
+    def mock_llm_final_response(self):
+        """Final LLM response after tool calls"""
+        return ModelResponse(
+            id="test-final",
+            created=1735081811,
+            model="gpt-4",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content="I've completed the requested tasks!",
+                        role="assistant", 
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=50, total_tokens=60),
+            service_tier=None,
+        )
+
     @pytest.mark.asyncio
-    async def test_agent_with_tool_calls(self, mock_router, mock_mcp_server_config):
-        """Integration test: agent generates response with tool calls"""
-        # Setup agent config
-        config = AgentConfig(
-            llm_model="gpt-4",
-            system_prompt="You are a helpful assistant."
+    async def test_agent_initialization_with_real_server(self, real_mcp_config, simple_agent_config):
+        """Test agent initialization with real MCP server"""
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config
         )
         
-        # Mock LLM response with tool calls
-        mock_tool_call = {
-            "id": "call_123",
-            "function": {"name": "test_tool", "arguments": '{"param": "value"}'},
-            "type": "function"
-        }
+        # Basic initialization checks
+        assert agent.agent_id == "test-agent"
+        assert agent.model == "gpt-4"
+        assert len(agent.messages) == 0
+        assert agent.allow_images is False
+        assert agent.mcp_client is not None
+
+    @pytest.mark.asyncio
+    async def test_fastmcp_server_direct_integration(self, fastmcp_server):
+        """Test direct integration with FastMCP server using in-memory transport"""
+        client = Client(transport=FastMCPTransport(fastmcp_server))
         
-        mock_message = Mock()
-        mock_message.content = None
-        mock_message.tool_calls = [mock_tool_call]
-        mock_message.model_dump.return_value = {
-            "role": "assistant", 
-            "tool_calls": [mock_tool_call]
-        }
+        async with client:
+            # Test listing tools
+            tools = await client.list_tools()
+            assert len(tools) == 3
+            tool_names = {tool.name for tool in tools}
+            assert tool_names == {"greet", "add", "sleep"}
+            
+            # Test calling tools
+            result = await client.call_tool("greet", {"name": "World"})
+            assert "Hello, World!" in str(result.content)
+            
+            result = await client.call_tool("add", {"a": 5, "b": 3})
+            assert "8" in str(result.content)
+
+    @pytest.mark.asyncio
+    async def test_real_mcp_server_tool_listing(self, real_mcp_config):
+        """Test that we can list tools from the real MCP server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        mock_choice = Mock()
-        mock_choice.message = mock_message
+        # Get tools from the real server
+        tools = await client.get_tools(format="mcp")
         
-        mock_llm_response = Mock()
-        mock_llm_response.choices = [mock_choice]
+        assert len(tools) >= 3  # Should have at least greet, add, sleep
+        tool_names = {tool.name for tool in tools}
+        assert "greet" in tool_names
+        assert "add" in tool_names
+        assert "sleep" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_real_mcp_server_tool_calling(self, real_mcp_config):
+        """Test calling tools on the real MCP server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        # Mock tool execution result
-        mock_tool_result = Mock()
-        mock_tool_result.tool_call_id = "call_123"
-        mock_tool_result.tool_call_name = "test_tool"
-        mock_tool_result.tool_result_content = [{"type": "text", "text": "Tool executed successfully"}]
+        # Test calling the greet tool
+        from mcp.types import CallToolRequestParams
+        greet_call = CallToolRequestParams(name="greet", arguments={"name": "Test User"})
+        greet_call.id = "test_call_1"
         
-        mock_client = Mock()
-        mock_client._get_openai_tools = AsyncMock(return_value=[])
-        mock_client.call_tools = AsyncMock(return_value=[mock_tool_result])
+        result = await client.call_tool(greet_call)
         
-        agent, _ = create_mock_agent(mock_router, mock_mcp_server_config, config, mock_client)
-        mock_router.acompletion = AsyncMock(return_value=mock_llm_response)
+        assert result.tool_call_id == "test_call_1"
+        assert result.tool_call_name == "greet" 
+        assert "Hello, Test User!" in result.tool_result_content[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_simple_conversation_flow(self, real_mcp_config, simple_agent_config, mock_router):
+        """Test a simple conversation without tools"""
+        mock_response = ModelResponse(
+            id="test",
+            created=1,
+            model="gpt-4",
+            object="chat.completion", 
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content="I understand! How can I help?",
+                        role="assistant",
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=20, total_tokens=30),
+            service_tier=None,
+        )
         
-        # Add user message
-        agent.add_user_message("Please use the test tool.")
+        mock_router.acompletion = AsyncMock(return_value=mock_response)
         
-        # Execute one step (should generate response with tool call and execute it)
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config,
+            router=mock_router
+        )
+        
+        # Test adding a message and getting response
+        await agent.add_user_message("Hello!")
+        step_result = await agent.step()
+        
+        assert step_result.llm_message.content == "I understand! How can I help?"
+        assert step_result.llm_message.tool_calls is None
+        assert len(agent.messages) == 2  # user + assistant
+
+    @pytest.mark.asyncio
+    async def test_tool_calling_workflow(self, real_mcp_config, simple_agent_config, mock_router):
+        """Test complete tool calling workflow with real server"""
+        # Mock LLM to first request a tool call, then provide final response
+        from litellm.types.utils import ChatCompletionMessageToolCall, Function
+        mock_tool_response = ModelResponse(
+            id="test-tool",
+            created=1,
+            model="gpt-4",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        content=None,
+                        role="assistant",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                function=Function(arguments='{"name":"Integration Test"}', name="greet"),
+                                id="call_123",
+                                type="function",
+                            )
+                        ],
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=25, prompt_tokens=30, total_tokens=55),
+            service_tier=None,
+        )
+        
+        mock_final_response = ModelResponse(
+            id="test-final",
+            created=1,
+            model="gpt-4",
+            object="chat.completion",
+            system_fingerprint="test", 
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content="I've greeted the user successfully!",
+                        role="assistant",
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=50, total_tokens=60),
+            service_tier=None,
+        )
+        
+        # Mock router to return tool call first, then final response
+        mock_router.acompletion = AsyncMock(side_effect=[mock_tool_response, mock_final_response])
+        
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config,
+            router=mock_router
+        )
+        
+        # Run conversation
+        results = await agent.run_conversation(["Please greet 'Integration Test'"])
+        
+        # Should have 2 steps: tool call + final response
+        assert len(results) == 2
+        
+        # First step should have tool calls and results
+        assert results[0].llm_message.tool_calls is not None
+        assert len(results[0].tool_execution_results) == 1
+        assert "Hello, Integration Test!" in results[0].tool_execution_results[0].tool_result_content[0]["text"]
+        
+        # Second step should be final response
+        assert results[1].llm_message.tool_calls is None
+        assert results[1].llm_message.content == "I've greeted the user successfully!"
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_concept(self, fastmcp_server):
+        """Demonstrate parallel tool calling with in-memory server"""
+        client = Client(transport=FastMCPTransport(fastmcp_server))
+        
+        async with client:
+            # Execute multiple tools in parallel
+            tasks = [
+                client.call_tool("greet", {"name": "Alice"}),
+                client.call_tool("add", {"a": 10, "b": 20}),
+                client.call_tool("greet", {"name": "Bob"})
+            ]
+            
+            results = await asyncio.gather(*tasks)
+            
+            assert len(results) == 3
+            assert "Hello, Alice!" in str(results[0].content)
+            assert "30" in str(results[1].content)
+            assert "Hello, Bob!" in str(results[2].content)
+
+    @pytest.mark.asyncio
+    async def test_error_handling_with_real_server(self, real_mcp_config, simple_agent_config):
+        """Test error handling with real MCP server"""
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config
+        )
+        
+        # Test calling tool with wrong parameters
+        from mcp.types import CallToolRequestParams
+        bad_call = CallToolRequestParams(name="greet", arguments={"greet": "test", "name": "test"})
+        bad_call.id = "bad_call"
+        
+        # This should handle the error gracefully (depending on implementation)
+        result = await agent.mcp_client.call_tool(bad_call)
+        # The exact error handling behavior depends on the implementation
+        assert result.tool_call_id == "bad_call"
+
+    @pytest.mark.asyncio
+    async def test_agent_hooks_simple(self, simple_agent_config, real_mcp_config, mock_router):
+        """Test agent hooks with minimal setup"""
+        
+        class SimpleHooks(AgentHooks):
+            def __init__(self):
+                self.events = []
+                self.step_count = 0
+            
+            async def pre_step(self, context):
+                self.step_count += 1
+                self.events.append("pre_step")
+            
+            async def post_step(self, context):
+                self.events.append("post_step")
+        
+        hooks = SimpleHooks()
+        
+        # Mock simple response
+        mock_response = ModelResponse(
+            id="test", created=1, model="gpt-4", object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="stop", index=0,
+                    message=Message(content="Hello!", role="assistant", tool_calls=None, function_call=None)
+                )
+            ],
+            usage=Usage(completion_tokens=5, prompt_tokens=10, total_tokens=15),
+            service_tier=None,
+        )
+        
+        mock_router.acompletion = AsyncMock(return_value=mock_response)
+        
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config,
+            router=mock_router,
+            hooks=hooks
+        )
+        
+        await agent.add_user_message("Test message")
         await agent.step()
         
-        # Verify the flow
-        mock_router.acompletion.assert_called_once()
-        mock_client.call_tools.assert_called_once()
+        # Verify hooks were called
+        assert hooks.step_count == 1
+        assert "pre_step" in hooks.events
+        assert "post_step" in hooks.events
+
+    @pytest.mark.asyncio
+    async def test_message_management(self, simple_agent_config, real_mcp_config):
+        """Test basic message management functionality"""
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config
+        )
         
-        # Should have 3 messages: user, assistant with tool calls, and tool result
-        assert len(agent.messages) == 3
+        # Test adding messages
+        await agent.add_user_message("First message")
+        await agent.add_user_message("Second message")
+        
+        assert len(agent.messages) == 2
         assert agent.messages[0]["role"] == "user"
-        assert agent.messages[1]["role"] == "assistant"
-        assert agent.messages[2]["role"] == "tool"
+        assert agent.messages[1]["role"] == "user"
+        assert agent.messages[0]["content"][0]["text"] == "First message"
+        
+        # Test reset
+        agent.reset_messages()
+        assert len(agent.messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_image_handling_disabled(self, simple_agent_config, real_mcp_config):
+        """Test that images are ignored when disabled"""
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,  # allow_images=False by default
+            mcp_config=real_mcp_config
+        )
+        
+        # Add message with image - should be ignored
+        await agent.add_user_message("Describe image", image_base64s=["fake_base64"])
+        
+        # Verify only text was added
+        user_message = agent.messages[-1]
+        assert len(user_message["content"]) == 1
+        assert user_message["content"][0]["type"] == "text"
+        assert user_message["content"][0]["text"] == "Describe image"

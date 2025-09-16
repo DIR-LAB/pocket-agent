@@ -1,6 +1,6 @@
 [project]
 name = "pocket-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support"
 readme = "README.md"
 license = "MIT"
@@ -37,8 +37,12 @@ classifiers = [
 
 # Build system configuration
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Add dynamic versioning configuration:
+[tool.hatch.version]
+source = "vcs"
 
 # Configure the package structure
 [tool.hatch.build.targets.wheel]
@@ -57,6 +61,7 @@ dev = [
     "pre-commit>=3.0.0",
     "build>=1.0.0",
     "twine>=5.0.0",
+    "hatch-vcs>=0.5.0",
 ]
 examples = [
     "python-dotenv>=1.0.0",

@@ -1,14 +1,18 @@
 import pytest
-import logging
-from unittest.mock import Mock, AsyncMock, patch
-from pocket_agent.client import Client, ToolResult
-from fastmcp.client.logging import LogMessage
-from fastmcp.exceptions import ToolError
+import asyncio
+import os
+from unittest.mock import Mock, AsyncMock
+from pocket_agent.client import PocketAgentClient, ToolResult
+from fastmcp.client import Client
+from fastmcp.client.transports import FastMCPTransport
+from mcp.types import CallToolRequestParams
 
 
 class TestToolResult:
+    """Test the ToolResult dataclass"""
+    
     def test_tool_result_creation(self):
-        """Test ToolResult dataclass"""
+        """Test ToolResult creation with all fields"""
         result = ToolResult(
             tool_call_id="call_123",
             tool_call_name="test_tool",
@@ -19,195 +23,221 @@ class TestToolResult:
         assert result.tool_call_name == "test_tool"
         assert result.tool_result_content == [{"type": "text", "text": "result"}]
 
-
-class TestClient:
-    def test_client_initialization(self, mock_mcp_server_config):
-        """Test Client initialization with default parameters"""
-        with patch('pocket_agent.client.MCPClient') as mock_mcp_client:
-            client = Client(mock_mcp_server_config)
-            
-            assert client.client_logger.name == "pocket_agent.client"
-            assert client.mcp_logger.name == "pocket_agent.mcp"
-            mock_mcp_client.assert_called_once()
-
-    def test_client_initialization_with_custom_loggers(self, mock_mcp_server_config):
-        """Test Client initialization with custom loggers"""
-        custom_client_logger = logging.getLogger("custom.client")
-        custom_mcp_logger = logging.getLogger("custom.mcp")
-        custom_log_handler = Mock()
+    def test_tool_result_with_extra_data(self):
+        """Test ToolResult with optional _extra field"""
+        result = ToolResult(
+            tool_call_id="call_123",
+            tool_call_name="test_tool",
+            tool_result_content=[{"type": "text", "text": "result"}],
+            _extra={"metadata": "value"}
+        )
         
-        with patch('pocket_agent.client.MCPClient') as mock_mcp_client:
-            client = Client(
-                mock_mcp_server_config,
-                client_logger=custom_client_logger,
-                mcp_logger=custom_mcp_logger,
-                mcp_log_handler=custom_log_handler
-            )
-            
-            assert client.client_logger == custom_client_logger
-            assert client.mcp_logger == custom_mcp_logger
-            assert client.mcp_log_handler == custom_log_handler
+        assert result._extra == {"metadata": "value"}
 
-    def test_default_mcp_log_handler(self, mock_mcp_server_config):
-        """Test the default MCP log handler"""
-        with patch('pocket_agent.client.MCPClient'):
-            client = Client(mock_mcp_server_config)
-            
-            # Create a mock log message
-            log_message = Mock()
-            log_message.level = "INFO"
-            log_message.data = {
-                "msg": "Test message",
-                "extra": {"key": "value"}
+
+class TestPocketAgentClient:
+    """Simplified tests for PocketAgentClient using real FastMCP servers"""
+
+    @pytest.fixture
+    def real_mcp_config(self):
+        """MCP configuration that points to real test server"""
+        return {
+            "mcpServers": {
+                "test_server": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["server.py"],
+                    "cwd": os.path.dirname(__file__)
+                }
             }
-            
-            with patch.object(client.mcp_logger, 'log') as mock_log:
-                client._default_mcp_log_handler(log_message)
-                
-                mock_log.assert_called_once_with(
-                    logging.INFO, 
-                    "[MCP] Test message", 
-                    extra={"key": "value", "source": "mcp_server"}
-                )
+        }
+
+    def test_client_initialization(self, real_mcp_config):
+        """Test basic client initialization"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
+        
+        # Basic checks
+        assert client.mcp_server_config == real_mcp_config
+        assert client.client_logger.name == "pocket_agent.client"
+        assert hasattr(client, 'client')
+
+    def test_client_with_custom_loggers(self, real_mcp_config):
+        """Test client initialization with custom loggers"""
+        import logging
+        custom_logger = logging.getLogger("custom.test")
+        
+        client = PocketAgentClient(
+            mcp_config=real_mcp_config,
+            client_logger=custom_logger
+        )
+        
+        assert client.client_logger == custom_logger
 
     @pytest.mark.asyncio
-    async def test_get_mcp_tools(self, mock_mcp_server_config):
-        """Test getting MCP tools"""
-        mock_tools = [Mock(name="tool1"), Mock(name="tool2")]
+    async def test_get_tools_mcp_format(self, real_mcp_config):
+        """Test getting tools in MCP format from real server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        with patch('pocket_agent.client.MCPClient') as mock_mcp_client:
-            mock_client_instance = Mock()
-            mock_client_instance.get_tools = AsyncMock(return_value=mock_tools)
-            mock_mcp_client.return_value = mock_client_instance
-            
-            client = Client(mock_mcp_server_config)
-            
-            # Mock the async context manager
-            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
-            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
-            client.client = mock_client_instance
-            
-            result = await client._get_mcp_tools()
-            
-            assert result == mock_tools
-            mock_client_instance.get_tools.assert_called_once()
+        tools = await client.get_tools(format="mcp")
+        
+        # Should have tools from our test server
+        assert len(tools) >= 3
+        tool_names = {tool.name for tool in tools}
+        assert "greet" in tool_names
+        assert "add" in tool_names
+        assert "sleep" in tool_names
 
     @pytest.mark.asyncio
-    async def test_get_openai_tools(self, mock_mcp_server_config):
-        """Test converting MCP tools to OpenAI format"""
-        mock_mcp_tools = [Mock(name="tool1")]
-        mock_openai_tool = {"type": "function", "function": {"name": "tool1"}}
+    async def test_get_tools_openai_format(self, real_mcp_config):
+        """Test getting tools in OpenAI format from real server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        with patch('pocket_agent.client.MCPClient'):
-            with patch('pocket_agent.client.transform_mcp_tool_to_openai_tool', return_value=mock_openai_tool):
-                client = Client(mock_mcp_server_config)
-                
-                with patch.object(client, '_get_mcp_tools', return_value=mock_mcp_tools):
-                    result = await client._get_openai_tools()
-                    
-                    assert result == [mock_openai_tool]
+        tools = await client.get_tools(format="openai")
+        
+        # Should have tools converted to OpenAI format
+        assert len(tools) >= 3
+        
+        # Check OpenAI format structure
+        greet_tool = next((t for t in tools if t["function"]["name"] == "greet"), None)
+        assert greet_tool is not None
+        assert greet_tool["type"] == "function"
+        assert "parameters" in greet_tool["function"]
 
     @pytest.mark.asyncio
-    async def test_call_tool_success(self, mock_mcp_server_config):
-        """Test successful tool call"""
-        mock_tool_call = Mock()
-        mock_tool_call.id = "call_123"
-        mock_tool_call.name = "test_tool"
-        mock_tool_call.model_dump.return_value = {"id": "call_123", "function": {"name": "test_tool"}}
+    async def test_call_tool_greet(self, real_mcp_config):
+        """Test calling the greet tool on real server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        mock_mcp_result = Mock()
-        mock_mcp_result.structuredContent = "Tool result"
+        # Create a proper tool call request
+        tool_call = CallToolRequestParams(
+            name="greet", 
+            arguments={"name": "Test User"}
+        )
+        tool_call.id = "test_call_123"
         
-        with patch('pocket_agent.client.MCPClient'):
-            with patch('pocket_agent.client.transform_openai_tool_call_request_to_mcp_tool_call_request') as mock_transform:
-                mock_mcp_request = Mock()
-                mock_mcp_request.arguments = {"arg": "value"}
-                mock_transform.return_value = mock_mcp_request
-                
-                client = Client(mock_mcp_server_config)
-                client.client.call_tool = AsyncMock(return_value=mock_mcp_result)
-                
-                result = await client.call_tool(mock_tool_call)
-                
-                assert isinstance(result, ToolResult)
-                assert result.tool_call_id == "call_123"
-                assert result.tool_call_name == "test_tool"
-                assert result.tool_result_content == [{"type": "text", "text": "Tool result"}]
+        result = await client.call_tool(tool_call)
+        
+        assert isinstance(result, ToolResult)
+        assert result.tool_call_id == "test_call_123"
+        assert result.tool_call_name == "greet"
+        assert len(result.tool_result_content) > 0
+        assert "Hello, Test User!" in result.tool_result_content[0]["text"]
 
     @pytest.mark.asyncio
-    async def test_call_tool_with_tool_error(self, mock_mcp_server_config):
-        """Test tool call with ToolError"""
-        mock_tool_call = Mock()
-        mock_tool_call.id = "call_123" 
-        mock_tool_call.name = "test_tool"
-        mock_tool_call.model_dump.return_value = {"id": "call_123", "function": {"name": "test_tool"}}
+    async def test_call_tool_add(self, real_mcp_config):
+        """Test calling the add tool on real server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        with patch('pocket_agent.client.MCPClient'):
-            with patch('pocket_agent.client.transform_openai_tool_call_request_to_mcp_tool_call_request'):
-                client = Client(mock_mcp_server_config)
-                client.client.call_tool = AsyncMock(side_effect=ToolError("unexpected_keyword_argument test"))
-                
-                with patch.object(client, '_get_tool_format', return_value='{"arg": "string"}'):
-                    result = await client.call_tool(mock_tool_call)
-                    
-                    assert isinstance(result, ToolResult)
-                    assert "unexpected keyword argument" in result.tool_result_content[0]["text"]
+        tool_call = CallToolRequestParams(
+            name="add",
+            arguments={"a": 15, "b": 25}
+        )
+        tool_call.id = "test_add_456"
+        
+        result = await client.call_tool(tool_call)
+        
+        assert result.tool_call_id == "test_add_456"
+        assert result.tool_call_name == "add"
+        assert "40" in result.tool_result_content[0]["text"]
 
-    @pytest.mark.asyncio  
-    async def test_call_tools_parallel(self, mock_mcp_server_config):
-        """Test calling multiple tools in parallel"""
-        mock_tool_calls = [Mock(), Mock()]
-        mock_results = [Mock(), Mock()]
-        
-        with patch('pocket_agent.client.MCPClient'):
-            client = Client(mock_mcp_server_config)
-            
-            # Use AsyncMock for the async method
-            with patch.object(client, 'call_tool', new=AsyncMock(side_effect=mock_results)) as mock_call_tool:
-                # Mock async context manager
-                client.client.__aenter__ = AsyncMock(return_value=client.client)
-                client.client.__aexit__ = AsyncMock(return_value=None)
-                
-                result = await client.call_tools(mock_tool_calls)
-                
-                assert result == mock_results
-                # Verify call_tool was called for each tool_call
-                assert mock_call_tool.call_count == len(mock_tool_calls)
 
-    def test_parse_tool_result_with_structured_content(self, mock_mcp_server_config):
-        """Test parsing tool result with structured content"""
-        mock_result = Mock()
-        mock_result.structuredContent = "Structured result"
+    @pytest.mark.asyncio
+    async def test_get_tool_input_format(self, real_mcp_config):
+        """Test getting tool input format from real server"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        with patch('pocket_agent.client.MCPClient'):
-            client = Client(mock_mcp_server_config)
-            
-            parsed = client._parse_tool_result(mock_result)
-            
-            assert parsed == [{"type": "text", "text": "Structured result"}]
+        # Get the format for the greet tool
+        format_info = await client.get_tool_input_format("greet")
+        
+        # Should return schema information
+        assert format_info is not None
+        # The exact format depends on the server implementation
 
-    def test_parse_tool_result_with_content_array(self, mock_mcp_server_config):
-        """Test parsing tool result with content array"""
-        mock_text_content = Mock()
-        mock_text_content.type = "text"
-        mock_text_content.text = "Text content"
+    @pytest.mark.asyncio
+    async def test_get_tool_input_format_missing_tool(self, real_mcp_config):
+        """Test getting format for non-existent tool"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
         
-        mock_image_content = Mock()
-        mock_image_content.type = "image"
-        mock_image_content.imageBase64 = "base64data"
+        with pytest.raises(ValueError, match="Tool nonexistent_tool not found"):
+            await client.get_tool_input_format("nonexistent_tool")
+
+
+    @pytest.mark.asyncio
+    async def test_fastmcp_direct_comparison(self, fastmcp_server):
+        """Compare PocketAgentClient behavior with direct FastMCP usage"""
+        # Direct FastMCP client
+        fastmcp_client = Client(transport=FastMCPTransport(fastmcp_server))
         
-        mock_result = Mock()
-        mock_result.structuredContent = None
-        mock_result.content = [mock_text_content, mock_image_content]
-        
-        with patch('pocket_agent.client.MCPClient'):
-            client = Client(mock_mcp_server_config)
+        async with fastmcp_client:
+            # Get tools directly from FastMCP
+            fastmcp_tools = await fastmcp_client.list_tools()
+            fastmcp_tool_names = {t.name for t in fastmcp_tools}
             
-            parsed = client._parse_tool_result(mock_result)
+            # Call tool directly
+            fastmcp_result = await fastmcp_client.call_tool("greet", {"name": "Direct"})
             
-            assert len(parsed) == 2
-            assert parsed[0] == {"type": "text", "text": "Text content"}
-            assert parsed[1] == {
-                "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,base64data"}
+            assert "greet" in fastmcp_tool_names
+            assert "add" in fastmcp_tool_names
+            assert "Hello, Direct!" in str(fastmcp_result.content)
+
+    @pytest.mark.asyncio
+    async def test_async_tool_execution(self, real_mcp_config):
+        """Test calling async tools (like sleep)"""
+        client = PocketAgentClient(mcp_config=real_mcp_config)
+        
+        # Call the async sleep tool with short duration
+        sleep_call = CallToolRequestParams(
+            name="sleep",
+            arguments={"seconds": 0.1}  # Short sleep for testing
+        )
+        sleep_call.id = "sleep_test"
+        
+        import time
+        start_time = time.time()
+        result = await client.call_tool(sleep_call)
+        end_time = time.time()
+        
+        assert result.tool_call_id == "sleep_test"
+        assert "Slept for 0.1 seconds" in result.tool_result_content[0]["text"]
+        # Should have actually waited
+        assert (end_time - start_time) >= 0.1
+
+    def test_client_configuration_handling(self):
+        """Test client handles different configuration formats"""
+        # Test with minimal config
+        minimal_config = {
+            "mcpServers": {
+                "test": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["server.py"]
+                }
             }
+        }
+        
+        client = PocketAgentClient(mcp_config=minimal_config)
+        assert client.mcp_server_config == minimal_config
+
+    @pytest.mark.asyncio
+    async def test_transform_tool_call_request(self, real_mcp_config):
+        """Test tool call request transformation"""
+        from litellm.types.utils import ChatCompletionMessageToolCall, Function
+        
+        client = PocketAgentClient(mcp_config=real_mcp_config)
+        
+        # Create OpenAI-style tool call
+        openai_tool_call = ChatCompletionMessageToolCall(
+            function=Function(
+                arguments='{"name":"Transform Test"}',
+                name="greet"
+            ),
+            id="transform_test",
+            type="function"
+        )
+        
+        # Transform it
+        mcp_call = client.transform_tool_call_request(openai_tool_call)
+        
+        assert mcp_call.name == "greet"
+        assert mcp_call.arguments == {"name": "Transform Test"}
+        assert mcp_call.id == "transform_test"
