@@ -1,6 +1,6 @@
-# Claude's Guide to Pocket Agent Framework
+# Guide to Pocket Agent Framework
 
-This guide provides comprehensive information for AI assistants (particularly Claude) working with the Pocket Agent framework - a lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support.
+This guide provides comprehensive information for AI assistants working with the Pocket Agent framework - a lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support.
 
 ## Table of Contents
 
@@ -32,9 +32,6 @@ Pocket Agent follows a **minimal but extensible** approach:
 
 ## Core Architecture
 
-```markdown:/Users/chris/GitHub/simple_agent/claude.md
-<code_block_to_apply_changes_from>
-```
 ┌─────────────────────────────────────────────────────────┐
 │                    PocketAgent                          │
 ├─────────────────────────────────────────────────────────┤
@@ -62,7 +59,6 @@ Pocket Agent follows a **minimal but extensible** approach:
 │  • Server communication                                 │
 │  • Transport management                                 │
 └─────────────────────────────────────────────────────────┘
-```
 
 ## Key Classes and Components
 
@@ -694,4 +690,4 @@ The file has been created! This comprehensive guide covers all the key aspects o
 - **Debugging**: Troubleshooting tips and debugging hooks
 - **Advanced Features**: Router integration, custom result processing, etc.
 
-This guide should serve as a comprehensive reference for anyone (especially AI assistants like Claude) working with the pocket_agent framework, providing both conceptual understanding and practical implementation guidance.
+This guide should serve as a comprehensive reference for anyone (especially AI assistants) working with the pocket_agent framework, providing both conceptual understanding and practical implementation guidance.
