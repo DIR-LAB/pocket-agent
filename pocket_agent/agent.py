@@ -94,7 +94,7 @@ class AgentHooks:
             tool_call_name = tool_call.name
             tool_format = await context.agent.mcp_client.get_tool_input_format(tool_call_name)
             return "You supplied an unexpected keyword argument to the tool. \
-                Try again with the correct arguments as specified in expected format: \n" + tool_format
+                Try again with the correct arguments as specified in expected format: \n" + json.dumps(tool_format)
         return False
 
 
