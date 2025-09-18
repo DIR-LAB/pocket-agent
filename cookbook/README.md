@@ -1,5 +1,3 @@
-# Pocket Agent Cookbook
-
 <div align="center">
 
 # Pocket-Agent Cookbook
