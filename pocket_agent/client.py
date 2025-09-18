@@ -1,4 +1,4 @@
-from fastmcp import Client as MCPClient
+from fastmcp import Client as MCPClient, FastMCP as FastMCPServer
 from fastmcp.client.client import CallToolResult as FastMCPCallToolResult
 from fastmcp.exceptions import ToolError
 from fastmcp.client.logging import LogMessage
@@ -15,7 +15,7 @@ from litellm.experimental_mcp_client.tools import (
             )
 from litellm.types.utils import ChatCompletionMessageToolCall
 from dataclasses import dataclass
-from typing import Optional, Callable, Literal
+from typing import Optional, Callable, Literal, Union
 import asyncio
 import logging
 import copy
@@ -23,7 +23,7 @@ import copy
 
 
 @dataclass
-class ToolResult:
+class PocketAgentToolResult:
     tool_call_id: str
     tool_call_name: str
     tool_result_content: list[dict]
@@ -31,36 +31,49 @@ class ToolResult:
 
 
 class PocketAgentClient:
-    def __init__(self, mcp_config: dict, 
+    def __init__(self, mcp_config: Union[dict, FastMCPServer], 
                  mcp_logger: Optional[logging.Logger] = None,
                  log_handler: Optional[Callable[[LogMessage], None]] = None,
                  client_logger: Optional[logging.Logger] = None,
                  on_tool_error: Optional[Callable[[ChatCompletionMessageToolCall, Exception], bool]] = None,
                  mcp_server_query_params: Optional[dict] = None,
-                 tool_result_handler: Optional[Callable[[ChatCompletionMessageToolCall, FastMCPCallToolResult], ToolResult]] = None,
+                 tool_result_handler: Optional[Callable[[ChatCompletionMessageToolCall, FastMCPCallToolResult], PocketAgentToolResult]] = None,
                  **kwargs
                  ):
-
-        self.mcp_server_config = copy.deepcopy(mcp_config)
-        if mcp_server_query_params:
-            server_config_with_params = self._add_mcp_server_query_params(mcp_server_query_params)
-            self.mcp_server_config = server_config_with_params
 
         # Separate loggers for different purposes
         self.client_logger = client_logger or logging.getLogger("pocket_agent.client")
         self.mcp_logger = mcp_logger or logging.getLogger("pocket_agent.mcp")
         self.mcp_log_handler = log_handler or self._default_mcp_log_handler
+
+        if isinstance(mcp_config, FastMCPServer):
+            self.client_logger.info(f"Using FastMCP server as transport")
+            self.mcp_server_config = mcp_config
+        else:
+            self.client_logger.info(f"Using MCP config as transport")
+            self.mcp_server_config = copy.deepcopy(mcp_config)
+            if mcp_server_query_params:
+                self.client_logger.info(f"Adding MCP server query params to MCP config")
+                self.mcp_server_config = self._add_mcp_server_query_params(mcp_server_query_params)
+
+        # Store kwargs for client recreation
+        self.client_init_kwargs = kwargs
         
+        # Pass MCP log handler to underlying MCP client using factory method
+        self.client = self._create_mcp_client(self.mcp_server_config)
         
-        # Pass MCP log handler to underlying MCP client
-        self.client = MCPClient(transport=self.mcp_server_config, 
-                                log_handler=self.mcp_log_handler,
-                                **kwargs
-                                )
-        
+        # Store on_tool_error and tool_result_handler
         self.on_tool_error = on_tool_error
         self.tool_result_handler = tool_result_handler or self._default_tool_result_handler
 
+
+    def _create_mcp_client(self, transport) -> MCPClient:
+        """Factory method for creating MCPClient instances with consistent config"""
+        return MCPClient(
+            transport=transport,
+            log_handler=self.mcp_log_handler,
+            **self.client_init_kwargs
+        )
 
     # This function allows agents to metadata via query params to MCP servers (e.g. supply a user id) 
     # Using this approach is only temporary until the official MCP Python SDK supports metadata in tool calls
@@ -127,7 +140,7 @@ class PocketAgentClient:
         return transformed_tool_call
             
 
-    async def call_tool(self, tool_call: MCPCallToolRequestParams) -> ToolResult:
+    async def call_tool(self, tool_call: MCPCallToolRequestParams) -> PocketAgentToolResult:
         tool_call_id = tool_call.id
         tool_call_name = tool_call.name
         tool_call_arguments = tool_call.arguments
@@ -144,7 +157,7 @@ class PocketAgentClient:
                         "type": "text",
                         "text": on_tool_error_result
                     }]
-                    return ToolResult(
+                    return PocketAgentToolResult(
                         tool_call_id=tool_call_id,
                         tool_call_name=tool_call_name,
                         tool_result_content=tool_result_content
@@ -162,7 +175,7 @@ class PocketAgentClient:
             return self.tool_result_handler(tool_call, tool_result)
 
     
-    def _default_tool_result_handler(self, tool_call: ChatCompletionMessageToolCall, tool_result: FastMCPCallToolResult) -> ToolResult:
+    def _default_tool_result_handler(self, tool_call: ChatCompletionMessageToolCall, tool_result: FastMCPCallToolResult) -> PocketAgentToolResult:
         """
         The function transforms the fastmcp tool result to a tool result that can be used by the agent.
         The default implementation just extracts text and image content and transforms them into a format that can directly be used as a message
@@ -183,7 +196,7 @@ class PocketAgentClient:
                         "url": f"data:{content.mimeType};base64,{content.data}"
                     }
                 })
-        return ToolResult(
+        return PocketAgentToolResult(
             tool_call_id=tool_call.id,
             tool_call_name=tool_call.name,
             tool_result_content=tool_result_content,
@@ -191,6 +204,14 @@ class PocketAgentClient:
                 "tool_result_raw_content": tool_result_raw_content
             }
         )
+
+    
+    def mount_server(self, server: FastMCPServer):
+        proxy_server = FastMCPServer.as_proxy(
+            self.client
+        )
+        proxy_server.mount(server)
+        self.client = self._create_mcp_client(proxy_server)
 
 
 
