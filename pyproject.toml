@@ -1,6 +1,6 @@
 [project]
 name = "pocket-agent"
-version = "0.1.1"
+version = "0.2.0"
 description = "A lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support"
 readme = "README.md"
 license = "MIT"
@@ -63,11 +63,21 @@ dev = [
     "twine>=5.0.0",
     "hatch-vcs>=0.5.0",
 ]
-examples = [
-    "python-dotenv>=1.0.0",
+
+# cookbook groups
+cookbook-rich = [
+    "rich>=14.1.0"
 ]
-# Add this new group for cookbook examples
-cookbook = [
-    {include-group = "examples"},
-    "streamlit>=1.28.0",
+cookbook-streamlit = [
+    "streamlit>=1.49.1"
 ]
+cookbook-rag = [
+    "llama-index>=0.14.2",
+]
+cookbook-all = [
+    {include-group = "cookbook-rich"},
+    {include-group = "cookbook-streamlit"},
+    {include-group = "cookbook-rag"},
+]
+
+

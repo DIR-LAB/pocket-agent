@@ -2,18 +2,18 @@ import pytest
 import asyncio
 import os
 from unittest.mock import Mock, AsyncMock
-from pocket_agent.client import PocketAgentClient, ToolResult
+from pocket_agent.client import PocketAgentClient, PocketAgentToolResult
 from fastmcp.client import Client
 from fastmcp.client.transports import FastMCPTransport
 from mcp.types import CallToolRequestParams
 
 
-class TestToolResult:
-    """Test the ToolResult dataclass"""
+class TestPocketAgentToolResult:
+    """Test the PocketAgentToolResult dataclass"""
     
     def test_tool_result_creation(self):
         """Test ToolResult creation with all fields"""
-        result = ToolResult(
+        result = PocketAgentToolResult(
             tool_call_id="call_123",
             tool_call_name="test_tool",
             tool_result_content=[{"type": "text", "text": "result"}]
@@ -25,7 +25,7 @@ class TestToolResult:
 
     def test_tool_result_with_extra_data(self):
         """Test ToolResult with optional _extra field"""
-        result = ToolResult(
+        result = PocketAgentToolResult(
             tool_call_id="call_123",
             tool_call_name="test_tool",
             tool_result_content=[{"type": "text", "text": "result"}],
@@ -117,7 +117,7 @@ class TestPocketAgentClient:
         
         result = await client.call_tool(tool_call)
         
-        assert isinstance(result, ToolResult)
+        assert isinstance(result, PocketAgentToolResult)
         assert result.tool_call_id == "test_call_123"
         assert result.tool_call_name == "greet"
         assert len(result.tool_result_content) > 0

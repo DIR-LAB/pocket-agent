@@ -95,7 +95,7 @@ def initialize_agent(real_time_placeholder):
                     "transport": "stdio",
                     "command": "python",
                     "args": ["server.py"],
-                    "cwd": os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "simple_weather")
+                    "cwd": os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "servers", "simple_weather")
                 }
             }
         }

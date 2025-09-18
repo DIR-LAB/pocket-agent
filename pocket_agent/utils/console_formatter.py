@@ -8,12 +8,16 @@ class ConsoleFormatter:
     def format_event(self, event: AgentEvent) -> None:
         if event.event_type == "new_message":
             role = event.data["role"]
+            name = event.meta.get("agent_name", None)
             content = event.data.get("content", None)
             tool_calls = event.data.get("tool_calls", None)
             
             # Create a clean separator and header
             print("\n" + "=" * 60)
-            print(f"🤖 {role.upper()} MESSAGE")
+            if name:
+                print(f"🤖 {name} MESSAGE")
+            else:
+                print(f"🤖 {role.upper()} MESSAGE")
             print("=" * 60)
             
             # Handle content formatting

@@ -29,6 +29,7 @@ Pocket Agent follows a **minimal but extensible** approach:
 - Automatic parallel tool execution
 - Comprehensive hook system for customization
 - Multi-model support via LiteLLM
+- Multi-agent orchestration with automatic tool integration
 
 ## Core Architecture
 
@@ -86,6 +87,8 @@ config = AgentConfig(
     llm_model="gpt-4",                    # Required: Model identifier
     system_prompt="You are helpful...",   # Optional: System prompt
     agent_id="custom-id",                 # Optional: Custom identifier
+    name="MyAgent",                       # Optional: Agent name (used for multi-agent tool names)
+    role_description="Specialized agent", # Optional: Role description (used for multi-agent tools)
     allow_images=True,                    # Optional: Enable image support
     messages=[],                          # Optional: Initial conversation
     completion_kwargs={                   # Optional: LLM parameters
@@ -95,7 +98,32 @@ config = AgentConfig(
 )
 ```
 
-### 3. StepResult
+### 3. PocketAgent Constructor
+
+PocketAgent initialization parameters:
+
+```python
+agent = PocketAgent(
+    agent_config,           # Required: AgentConfig instance
+    mcp_config=None,        # Optional: MCP server configuration (dict or FastMCP instance)
+    router=None,            # Optional: LiteLLM Router instance for rate limiting/fallbacks  
+    logger=None,            # Optional: Custom logger instance
+    hooks=None,             # Optional: AgentHooks instance for customization
+    sub_agents=[],          # Optional: List of PocketAgent instances to use as sub-agents
+    **client_kwargs         # Optional: Additional kwargs for PocketAgentClient
+)
+```
+
+**Parameter Details:**
+- **agent_config**: Required `AgentConfig` instance containing model, prompts, etc.
+- **mcp_config**: MCP server configuration (can be None if using only sub_agents)
+- **router**: LiteLLM Router for advanced model routing and rate limiting
+- **logger**: Custom logger for capturing agent activity
+- **hooks**: `AgentHooks` instance for customizing behavior at execution points
+- **sub_agents**: List of `PocketAgent` instances that become callable tools
+- **client_kwargs**: Additional parameters passed to `PocketAgentClient`
+
+### 4. StepResult
 
 Return value from `step()` method:
 
@@ -106,7 +134,7 @@ class StepResult:
     tool_execution_results: Optional[list[ToolResult]] = None   # Tool results
 ```
 
-### 4. AgentHooks
+### 5. AgentHooks
 
 Hook system for customizing behavior:
 
@@ -229,6 +257,79 @@ class ContextualAgent(PocketAgent):
         return {"context": self.conversation_context}
 ```
 
+### 4. Multi-Agent Orchestration
+
+```python
+class MultiAgentOrchestrator(PocketAgent):
+    """Orchestrator that coordinates specialized sub-agents"""
+    
+    def __init__(self, *args, **kwargs):
+        # Create specialized sub-agents
+        self.research_agent = PocketAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-3.5-turbo",
+                name="ResearchAgent",
+                role_description="Web research and information gathering specialist",
+                system_prompt="You are a research specialist. Find and analyze information from web sources."
+            ),
+            mcp_config=self._get_research_mcp_config()
+        )
+        
+        self.analysis_agent = PocketAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-3.5-turbo", 
+                name="AnalysisAgent",
+                role_description="Data analysis and visualization specialist",
+                system_prompt="You are a data analyst. Analyze data and create visualizations."
+            ),
+            mcp_config=self._get_analysis_mcp_config()
+        )
+        
+        # Initialize orchestrator with sub-agents
+        super().__init__(
+            sub_agents=[self.research_agent, self.analysis_agent],
+            *args, **kwargs
+        )
+    
+    async def run(self):
+        """Coordinate sub-agents for complex tasks"""
+        await self.add_user_message(
+            "Create a comprehensive market analysis report for AI startups. "
+            "First research the current market, then analyze the data to identify trends."
+        )
+        
+        # Let the orchestrator coordinate sub-agents automatically
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return {
+            "status": "completed",
+            "final_report": step_result.llm_message.content,
+            "sub_agents_used": [
+                r.tool_call_name for r in (step_result.tool_execution_results or [])
+                if r.tool_call_name.endswith("-message")
+            ]
+        }
+    
+    def _get_research_mcp_config(self):
+        return {"mcpServers": {"web_search": {"transport": "stdio", ...}}}
+    
+    def _get_analysis_mcp_config(self):
+        return {"mcpServers": {"data_viz": {"transport": "stdio", ...}}}
+
+# Usage
+orchestrator_config = AgentConfig(
+    llm_model="gpt-4",
+    system_prompt="You are an expert orchestrator who coordinates specialized agents. "
+                  "Use ResearchAgent for research tasks and AnalysisAgent for data analysis. "
+                  "Combine their outputs into comprehensive reports."
+)
+
+orchestrator = MultiAgentOrchestrator(agent_config=orchestrator_config)
+result = await orchestrator.run()
+```
+
 ## Best Practices
 
 ### 1. Agent Design
@@ -303,7 +404,61 @@ class RobustAgent(PocketAgent):
         return {"status": "completed", "result": step_result.llm_message.content}
 ```
 
-### 4. Hook Usage
+### 4. Multi-Agent Design
+
+**Do:**
+- Use clear, descriptive names and role descriptions for sub-agents
+- Design sub-agents with focused, specific capabilities
+- Ensure sub-agent `run()` methods accept a message parameter
+- Use meaningful system prompts that describe how to coordinate sub-agents
+- Consider the execution lock when designing parallel workflows
+
+**Don't:**
+- Create overly complex agent hierarchies (keep it simple)
+- Pass large amounts of data directly through sub-agent messages
+- Forget that sub-agents maintain their own conversation history
+- Create circular dependencies between agents
+
+**Sub-Agent Design Pattern:**
+
+```python
+class SpecializedSubAgent(PocketAgent):
+    async def run(self, message: str = None):
+        """Sub-agent must accept message parameter"""
+        if not message:
+            return "No task provided"
+        
+        # Reset for each task to avoid context pollution
+        self.reset_messages()
+        
+        await self.add_user_message(message)
+        
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        # Return clean result
+        return step_result.llm_message.content
+```
+
+**Orchestrator Design Pattern:**
+
+```python
+orchestrator_config = AgentConfig(
+    llm_model="gpt-4",  # Use more capable model for coordination
+    name="Orchestrator",
+    system_prompt=(
+        "You coordinate specialized agents to complete complex tasks. "
+        "Available agents:\n"
+        "- ResearchAgent: For web research and information gathering\n"
+        "- AnalysisAgent: For data analysis and visualization\n"
+        "- WritingAgent: For document creation and editing\n\n"
+        "Break down complex tasks and delegate appropriately."
+    )
+)
+```
+
+### 5. Hook Usage
 
 ```python
 from pocket_agent import AgentHooks, HookContext, AgentEvent
@@ -449,6 +604,152 @@ class EventDrivenHooks(AgentHooks):
         return result
 ```
 
+### 5. Multi-Agent Research and Analysis Workflow
+
+```python
+from pocket_agent import PocketAgent, AgentConfig
+
+class ResearchAgent(PocketAgent):
+    """Specialized agent for web research and information gathering"""
+    
+    async def run(self, message: str = None):
+        if not message:
+            return "No research task provided"
+        
+        # Start fresh for each research task
+        self.reset_messages()
+        await self.add_user_message(f"Research this topic comprehensively: {message}")
+        
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return step_result.llm_message.content
+
+class AnalysisAgent(PocketAgent):
+    """Specialized agent for data analysis and insights"""
+    
+    async def run(self, message: str = None):
+        if not message:
+            return "No analysis task provided"
+        
+        self.reset_messages()
+        await self.add_user_message(f"Analyze the following data and provide insights: {message}")
+        
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return step_result.llm_message.content
+
+class ReportAgent(PocketAgent):
+    """Specialized agent for creating comprehensive reports"""
+    
+    async def run(self, message: str = None):
+        if not message:
+            return "No report content provided"
+        
+        self.reset_messages()
+        await self.add_user_message(f"Create a comprehensive report from this information: {message}")
+        
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return step_result.llm_message.content
+
+class ComprehensiveResearchSystem(PocketAgent):
+    """Orchestrator that coordinates research, analysis, and reporting"""
+    
+    def __init__(self, research_topic, *args, **kwargs):
+        self.research_topic = research_topic
+        
+        # Create specialized sub-agents
+        research_agent = ResearchAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-3.5-turbo",
+                name="ResearchAgent",
+                role_description="Web research and information gathering specialist",
+                system_prompt="You are a thorough researcher. Find comprehensive information from web sources and provide detailed findings."
+            ),
+            mcp_config={"mcpServers": {"web_search": {"transport": "stdio", "command": "python", "args": ["web_search_server.py"]}}}
+        )
+        
+        analysis_agent = AnalysisAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-3.5-turbo",
+                name="AnalysisAgent", 
+                role_description="Data analysis and insights specialist",
+                system_prompt="You are a data analyst. Analyze information and identify key trends, patterns, and insights."
+            ),
+            mcp_config={"mcpServers": {"data_analysis": {"transport": "stdio", "command": "python", "args": ["analysis_server.py"]}}}
+        )
+        
+        report_agent = ReportAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-4",  # Use more capable model for final report
+                name="ReportAgent",
+                role_description="Comprehensive report creation specialist",
+                system_prompt="You are an expert report writer. Create well-structured, comprehensive reports with clear sections and professional formatting."
+            ),
+            mcp_config={"mcpServers": {"document_gen": {"transport": "stdio", "command": "python", "args": ["doc_server.py"]}}}
+        )
+        
+        # Initialize with sub-agents
+        super().__init__(
+            agent_config=AgentConfig(
+                llm_model="gpt-4",
+                name="ResearchOrchestrator", 
+                system_prompt=(
+                    "You are a research orchestrator that coordinates specialized agents:\n"
+                    "1. ResearchAgent: Use for gathering information and research\n"
+                    "2. AnalysisAgent: Use for analyzing data and identifying insights\n"
+                    "3. ReportAgent: Use for creating final comprehensive reports\n\n"
+                    "Always coordinate these agents in logical order: Research → Analysis → Report"
+                )
+            ),
+            sub_agents=[research_agent, analysis_agent, report_agent],
+            *args, **kwargs
+        )
+    
+    async def run(self):
+        """Execute comprehensive research workflow"""
+        await self.add_user_message(
+            f"Create a comprehensive research report on '{self.research_topic}'. "
+            f"First gather research, then analyze the findings, and finally create a professional report."
+        )
+        
+        # Let the orchestrator coordinate the workflow
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return {
+            "status": "completed",
+            "research_topic": self.research_topic,
+            "final_report": step_result.llm_message.content,
+            "agents_utilized": [
+                r.tool_call_name for r in (step_result.tool_execution_results or [])
+                if r.tool_call_name.endswith("-message")
+            ]
+        }
+
+# Usage Example
+async def run_comprehensive_research():
+    research_system = ComprehensiveResearchSystem(
+        research_topic="Impact of AI on Healthcare in 2024"
+    )
+    
+    result = await research_system.run()
+    
+    print("Research completed!")
+    print(f"Topic: {result['research_topic']}")
+    print(f"Agents used: {result['agents_utilized']}")
+    print(f"Final report:\n{result['final_report'][:500]}...")
+    
+    return result
+```
+
 ## Debugging and Troubleshooting
 
 ### 1. Common Issues
@@ -490,7 +791,58 @@ if iteration >= max_iterations:
     print("Warning: Max iterations reached")
 ```
 
-### 2. Debugging Hooks
+### 2. Multi-Agent Debugging
+
+**Issue: Sub-agents not being called**
+```python
+# Check if sub-agents are properly registered as tools
+tools = await main_agent.mcp_client.get_tools(format="openai")
+sub_agent_tools = [t for t in tools if t.get('function', {}).get('name', '').endswith('-message')]
+print(f"Available sub-agent tools: {[t['function']['name'] for t in sub_agent_tools]}")
+
+# Verify sub-agents are configured
+print(f"Sub-agents: {[agent.agent_config.name for agent in main_agent.sub_agents if hasattr(main_agent, 'sub_agents')]}")
+```
+
+**Issue: Sub-agent execution errors**
+```python
+# Debug sub-agent execution with detailed logging
+class MultiAgentDebugHooks(AgentHooks):
+    async def pre_tool_call(self, context: HookContext, tool_call):
+        if tool_call.name.endswith('-message'):
+            print(f"🤖 Calling sub-agent: {tool_call.name}")
+            print(f"   Message: {tool_call.arguments.get('message', 'N/A')}")
+        return tool_call
+    
+    async def post_tool_call(self, context: HookContext, tool_call, result):
+        if tool_call.name.endswith('-message'):
+            print(f"✅ Sub-agent {tool_call.name} completed")
+            print(f"   Result preview: {str(result.tool_result_content)[:100]}...")
+        return result
+
+# Use debug hooks with your orchestrator
+orchestrator = PocketAgent(
+    agent_config=config,
+    sub_agents=sub_agents,
+    hooks=MultiAgentDebugHooks()
+)
+```
+
+**Issue: Sub-agent context pollution**
+```python
+# Monitor sub-agent message history
+class SubAgentMonitor(AgentHooks):
+    async def pre_tool_call(self, context: HookContext, tool_call):
+        if tool_call.name.endswith('-message'):
+            # Find the sub-agent being called
+            agent_name = tool_call.name.replace('-message', '')
+            sub_agent = next((a for a in context.agent.sub_agents if a.agent_config.name == agent_name), None)
+            if sub_agent:
+                print(f"Sub-agent {agent_name} has {len(sub_agent.messages)} messages in history")
+        return tool_call
+```
+
+### 3. Debugging Hooks
 
 ```python
 from pocket_agent import AgentHooks, HookContext
@@ -597,27 +949,157 @@ class CustomResultHooks(AgentHooks):
         return context.agent.mcp_client._default_tool_result_handler(tool_call, tool_result)
 ```
 
-### 4. Multi-Agent Integration (Future Feature)
+### 4. Multi-Agent Systems
+
+Pocket Agent supports multi-agent architectures where you can compose agents by passing other PocketAgent instances as sub-agents. Sub-agents are automatically converted to MCP tools that the main agent can call.
+
+#### Basic Multi-Agent Setup
 
 ```python
-# This pattern will be supported in future versions
-class CoordinatorAgent(PocketAgent):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-        # Sub-agents for specialized tasks
-        self.research_agent = ResearchAgent(...)
-        self.analysis_agent = AnalysisAgent(...)
-        self.writing_agent = WritingAgent(...)
-    
+from pocket_agent import PocketAgent, AgentConfig
+
+# Create specialized sub-agents
+research_agent_config = AgentConfig(
+    llm_model="gpt-3.5-turbo",
+    name="ResearchAgent", 
+    role_description="Specialized in web research and information gathering",
+    system_prompt="You are a research specialist. Find and analyze information from web sources."
+)
+
+research_agent = PocketAgent(
+    agent_config=research_agent_config,
+    mcp_config=research_mcp_config  # MCP config with research tools
+)
+
+analysis_agent_config = AgentConfig(
+    llm_model="gpt-3.5-turbo",
+    name="AnalysisAgent",
+    role_description="Specialized in data analysis and visualization", 
+    system_prompt="You are a data analyst. Analyze data and create visualizations."
+)
+
+analysis_agent = PocketAgent(
+    agent_config=analysis_agent_config,
+    mcp_config=analysis_mcp_config  # MCP config with analysis tools
+)
+
+# Main orchestrator agent with sub-agents
+main_config = AgentConfig(
+    llm_model="gpt-4",
+    name="Orchestrator",
+    system_prompt="You coordinate between specialized agents to complete complex tasks. Use ResearchAgent for research tasks and AnalysisAgent for data analysis."
+)
+
+orchestrator = PocketAgent(
+    agent_config=main_config,
+    mcp_config=None,  # mcp_config can be None if only using sub-agents
+    sub_agents=[research_agent, analysis_agent]
+)
+```
+
+#### Sub-Agent Tool Integration
+
+When you add sub-agents to a main agent, they are automatically exposed as tools with names formatted as `{agent_name}-message` (e.g., "ResearchAgent-message", "AnalysisAgent-message"). Each sub-agent tool has a single `message: str` argument.
+
+```python
+# The main agent can now call sub-agents as tools:
+class OrchestratorAgent(PocketAgent):
     async def run(self):
-        """Coordinate multiple specialized agents"""
-        # This is a conceptual example - not yet implemented
-        research_result = await self.research_agent.run()
-        analysis_result = await self.analysis_agent.run(research_result)
-        final_result = await self.writing_agent.run(analysis_result)
+        await self.add_user_message("Research the latest developments in AI and then analyze the trends")
         
-        return final_result
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return {"result": step_result.llm_message.content}
+
+# When the orchestrator calls "ResearchAgent-message" with message="Research latest AI developments"
+# It automatically invokes research_agent.run("Research latest AI developments")
+```
+
+#### Sub-Agent Implementation Requirements
+
+**Important**: Sub-agents must implement their `run` method to:
+1. Accept a single string argument (the message from the tool call)
+2. Return one of: `None`, `str`, `dict`, or FastMCP `ToolResult` instance
+
+```python
+class ResearchSubAgent(PocketAgent):
+    async def run(self, message: str = None):
+        """Sub-agent run method must accept message parameter"""
+        if message:
+            await self.add_user_message(message)
+        
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        # Return string result that will be passed back to main agent
+        return step_result.llm_message.content
+```
+
+#### Complex Multi-Agent Coordination
+
+```python
+class ComplexCoordinatorAgent(PocketAgent):
+    async def run(self):
+        """Coordinate multiple sub-agents for complex workflow"""
+        await self.add_user_message("Create a comprehensive market analysis report for AI startups")
+        
+        # Let the orchestrator decide how to use sub-agents
+        step_result = await self.step()
+        while step_result.llm_message.tool_calls:
+            step_result = await self.step()
+        
+        return {
+            "status": "completed",
+            "report": step_result.llm_message.content,
+            "sub_agents_used": [
+                result.tool_call_name for result in (step_result.tool_execution_results or [])
+                if result.tool_call_name.endswith("-message")
+            ]
+        }
+```
+
+#### Sub-Agent Execution Model
+
+- **Thread Safety**: Sub-agents execute within a lock, preventing parallel calls to the same sub-agent instance
+- **Isolation**: Each sub-agent maintains its own conversation history and state
+- **Tool Composition**: Sub-agents can have their own MCP tools, and main agents can have both sub-agents and regular MCP tools
+- **Error Handling**: Sub-agent errors are handled through the standard tool error handling system
+
+#### Multi-Layer Agent Hierarchies
+
+```python
+# You can create hierarchies of agents
+level2_specialist = PocketAgent(
+    agent_config=AgentConfig(
+        llm_model="gpt-3.5-turbo",
+        name="DataProcessor",
+        system_prompt="Process and clean data"
+    ),
+    mcp_config=data_processing_config
+)
+
+level1_analyst = PocketAgent(
+    agent_config=AgentConfig(
+        llm_model="gpt-3.5-turbo", 
+        name="Analyst",
+        system_prompt="Analyze data using specialized processing tools"
+    ),
+    sub_agents=[level2_specialist],
+    mcp_config=analysis_config
+)
+
+top_level_coordinator = PocketAgent(
+    agent_config=AgentConfig(
+        llm_model="gpt-4",
+        name="Coordinator",
+        system_prompt="Coordinate complex analysis workflows"
+    ),
+    sub_agents=[level1_analyst],
+    mcp_config=coordination_config
+)
 ```
 
 ## Framework Integration Tips

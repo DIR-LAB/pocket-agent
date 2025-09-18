@@ -46,8 +46,7 @@ Pocket Agent takes the opposite approach by handling only the basic functions of
 
 ### 🚀 **Lightweight & Simple**
 - Minimal dependencies - just `fastmcp` and `litellm`
-- Clean abstractions that separate agent logic from MCP client details  
-- < 500 lines of code
+- Clean abstractions that separate agent logic from MCP client details
 
 ### 🎯 **Developer-Friendly**
 - Abstract base class design for easy extension
@@ -59,9 +58,9 @@ Pocket Agent takes the opposite approach by handling only the basic functions of
 - Easy model switching and configuration
 
 ### 💡 **Extensible**
-- Use any custom logging implementation
 - Easily integrate custom frontends using the built-in event system
 - Easily create fully custom agent implementations
+- Easily develop multi-agent systems
 
 ## 🧑‍🍳 [Cookbook](https://github.com/DIR-LAB/pocket-agent/tree/main/cookbook)
 #### Refer to the [Cookbook](https://github.com/DIR-LAB/pocket-agent/tree/main/cookbook) to find example implementations and try out PocketAgent without any implementation overhead
@@ -143,7 +142,7 @@ If you are using an agent (i.e. cursor, claude) to your PocketAgent, you can pro
 The `PocketAgent` is an abstract base class that provides the foundation for building custom agents. You inherit from this class and implement the `run()` method to define your agent's behavior.
 
 ```python
-from pocket_agent import PocketAgent, AgentConfig
+from pocket_agent import PocketAgent
 
 class MyAgent(PocketAgent):
     async def run(self):
@@ -154,11 +153,12 @@ class MyAgent(PocketAgent):
 **PocketAgent Parameters:**
 ```python
 agent = PocketAgent(
-    agent_config,   # Required: Instance of the AgentConfig class
-    mcp_config,     # Required: JSON MCP server configuration to pass tools to the agent
-    router,         # Optional: A litellm router to manage llm rate limits
+    agent_config,   # Required: (AgentConfig) Instance of the AgentConfig class
+    mcp_config,     # Optional (if sub_agents provided): (dict or FastMCP) MCP Server or JSON MCP server configuration to pass tools to the agent
+    router,         # Optional: A LiteLLM router instance to manage llm rate limits
     logger,         # Optional: A logger instance to capture logs
-    hooks,          # Optional: Instance of AgentHooks to optionally define custom behavior at common junction points
+    hooks,          # Optional: (AgentHooks) optionally define custom behavior at common junction points
+    sub_agents      # Optional: (list[PocketAgent]) list of Pocket-Agent's to be used as sub_agents
     **client_kwargs # Optional: additional kwargs passed to the PocketAgentClient
 
 )
@@ -447,6 +447,127 @@ agent = PocketAgent(
 You can also provide a custom LiteLLM Router for advanced model routing and fallback logic.
 
 
+
+### Multi-Agent systems with Pocket-Agent
+
+PocketAgent supports multi-agent architectures where you can compose agents by passing other PocketAgent instances as sub-agents. Sub-agents are automatically converted to MCP tools that the main agent can call.
+
+#### Basic Multi-Agent Setup
+
+```python
+from pocket_agent import PocketAgent, AgentConfig
+
+# Create a sub-agent with specialized capabilities
+sub_agent_config = AgentConfig(
+    llm_model="gpt-3.5-turbo",
+    name="MathAgent", 
+    role_description="A specialized agent for mathematical calculations",
+    system_prompt="You are an expert mathematician. Solve mathematical problems step by step."
+)
+
+math_agent = PocketAgent(
+    agent_config=sub_agent_config,
+    mcp_config=math_mcp_config  # MCP config with math tools
+)
+
+# Create main agent with the sub-agent
+main_config = AgentConfig(
+    llm_model="gpt-4",
+    name="MainAgent",
+    system_prompt="You are a helpful assistant. Use the MathAgent when you need to solve math problems."
+)
+
+main_agent = PocketAgent(
+    agent_config=main_config,
+    mcp_config=main_mcp_config,  # Optional: main agent can have its own tools too
+    sub_agents=[math_agent]      # Pass sub-agents as a list
+)
+```
+
+#### Multiple Sub-Agents
+
+You can create complex multi-agent systems with multiple specialized sub-agents:
+
+```python
+# Create specialized sub-agents
+research_agent = PocketAgent(
+    agent_config=AgentConfig(
+        llm_model="gpt-3.5-turbo",
+        name="ResearchAgent",
+        role_description="Specialized in web research and information gathering",
+        system_prompt="You are a research specialist. Find and analyze information from web sources."
+    ),
+    mcp_config=research_mcp_config
+)
+
+analysis_agent = PocketAgent(
+    agent_config=AgentConfig(
+        llm_model="gpt-3.5-turbo", 
+        name="AnalysisAgent",
+        role_description="Specialized in data analysis and visualization",
+        system_prompt="You are a data analyst. Analyze data and create visualizations."
+    ),
+    mcp_config=analysis_mcp_config
+)
+
+# Main orchestrator agent with multiple sub-agents
+orchestrator = PocketAgent(
+    agent_config=AgentConfig(
+        llm_model="gpt-4",
+        name="Orchestrator",
+        system_prompt="You coordinate between specialized agents to complete complex tasks."
+    ),
+    sub_agents=[research_agent, analysis_agent],
+    mcp_config=None            # mcp_config can be none if sub_agents are being used and the main agent doesn't need its own tools
+)
+```
+
+#### Sub-Agent Tool Integration
+
+When you add sub-agents to a main agent, they are automatically exposed as tools with names formatted as `{agent_name}-message` with a single `message: str` argument. The main agent can call these tools to interact with sub-agents.
+
+When a sub-agent tool is called, it will execute the agent's `run` method with the `message` tool call argument.
+Therefore, **the `run` method of a sub-agent must accept one argument as an input message and return.**
+Additionally, the `run` method must return either `None` or one of these types:
+ - `str`
+ - `dict`
+ - Instance of [FastMCP's ToolResult](https://github.com/jlowin/fastmcp/blob/39a1e59bfd9a665fd961d18418c5addde94c3019/src/fastmcp/tools/tool.py#L66C7-L66C17)
+
+
+#### Sub-agent Execution Lock
+
+In some cases the primary agent may invoke parallel calls to the same sub-agent. To avoid unexpected behavior in these scenarios, the sub-agent's `run` method is executed within a lock (i.e. only one invocation of a single agent's `run` method can execute at a time).
+
+If the sub-agent is able to handle multiple tasks at once, a simple workaround to avoid bottlenecks due to synchronous execution of parallel tool calls to a sub-agent is to instruct the parent agent to combine 
+
+
+### Pocket Agent as an MCP Server
+
+Any Pocket Agent instance can be used as a standalone MCP server to be integrated with external frameworks.
+
+This example shows how to set up a Pocket Agent as a FastMCP server:
+
+```python
+from pocket_agent import PocketAgent, AgentConfig
+
+class MyAgent(PocketAgent):
+    async def run(self):
+        # Your agent logic here
+        return {"status": "completed"}
+
+agent = MyAgent(
+    agent_config= # AgentConfig,
+    mcp_config= # MCP server config
+    )
+
+mcp_server = agent.as_mcp_server() # returns an instance of FastMCP
+```
+
+The MCP server generated in the above example will have a single `message` tool. See [Sub-Agent Tool Integration](#sub-agent-tool-integration) for more details on the `message` tool as it is the same.
+
+*Note: Even agents with sub-agents can be run as MCP Servers*
+
+
 ## Testing
 
 Pocket Agent includes a comprehensive test suite covering all core functionality. The tests are designed to be fast and reliable using in-memory FastMCP servers and mocked LLM responses.
@@ -482,10 +603,12 @@ python run_tests.py --quick
 | **Tool Execution** | ✅ Implemented | - | Automatic parallel tool calling and results handling |
 | **Hook System** | ✅ Implemented | - | Allow configurable hooks to inject functionality during agent execution |
 | **Logging Integration** | ✅ Implemented | - | Built-in logging with custom logger support |
+| **Multi-Agent Integration** | ✅ Implemented | - | Allow a PocketAgent to accept other PocketAgents as Sub Agents and automatically set up Sub Agents as tools for the Agent to use |
+| **function-as-a-tool support** | 📋 Planned | Medium | Allow python functions to be passed to PocketAgent to act as tools |
+| **Define Defaults for standard MCP Client handlers | 📋 Planned | Medium | Standard MCP client methods (i.e. sampling, progress, etc) may benefit from default implementations if custom behavior is not often needed |
 | **Streaming Responses** | 📋 Planned | Medium | Real-time response streaming support |
 | **Define Defaults for standard MCP Client handlers | 📋 Planned | Medium | Standard MCP client methods (i.e. sampling, progress, etc) may benefit from default implementations if custom behavior is not often needed |
-| **Multi-Agent Integration** | 📋 Planned | High | Allow a PocketAgent to accept other PocketAgents as Sub Agents and automatically set up Sub Agents as tools for the Agent to use |
-| **Resources Integration** | 📋 Planned | Medium | Automatically set up mcp read_resource functionality as a tool |
+| **Resources Integration** | 📋 Planned | Medium | Automatically set up mcp read_resource functionality as a tool (resources are not very commonly used today so this may not be necessary) |
 
 ### Modality support
 | Modality | Status | Priority | Description |

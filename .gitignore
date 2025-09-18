@@ -11,3 +11,12 @@ wheels/
 
 # pytest
 .pytest_cache
+
+# coverage
+htmlcov/
+.coverage
+
+# log files
+*.log
+
+

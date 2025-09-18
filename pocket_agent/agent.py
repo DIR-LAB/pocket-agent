@@ -5,20 +5,28 @@ from litellm.types.utils import (
     Message as LitellmMessage, 
     ModelResponse as LitellmModelResponse
 )
-from mcp.types import CallToolRequestParams as MCPCallToolRequestParams
+from mcp.types import (
+    CallToolRequestParams as MCPCallToolRequestParams,
+    TextContent as MCPTextContent,
+    ImageContent as MCPImageContent,
+)
 from abc import abstractmethod
 from fastmcp.client.logging import LogMessage
-import fastmcp
+from fastmcp.tools.tool import ToolResult as FastMCPToolResult, Tool as FastMCPTool
+from fastmcp import FastMCP
+from pydantic import Field
 import uuid
 import asyncio  # Add this import
 from typing import Optional, Tuple
+
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Any, Union
 import json
 import traceback
 
-from pocket_agent.client import PocketAgentClient, ToolResult
+
+from pocket_agent.client import PocketAgentClient, PocketAgentToolResult
 from pocket_agent.utils.logger import configure_logger as configure_pocket_agent_logger
 
 
@@ -26,17 +34,20 @@ from pocket_agent.utils.logger import configure_logger as configure_pocket_agent
 class AgentEvent:
     event_type: str
     data: dict
+    meta: Optional[dict] = field(default_factory=dict)
 
 @dataclass
 class StepResult:
     llm_message: LitellmMessage
-    tool_execution_results: Optional[list[ToolResult]] = None
+    tool_execution_results: Optional[list[PocketAgentToolResult]] = None
 
 
 @dataclass
 class AgentConfig:
     """Configuration class to make agent setup cleaner"""
     llm_model: str
+    name: Optional[str] = None
+    role_description: Optional[str] = None
     agent_id: Optional[str] = None
     system_prompt: Optional[str] = None
     messages: Optional[list[dict]] = None
@@ -70,14 +81,14 @@ class AgentHooks:
     async def pre_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams) -> Optional[MCPCallToolRequestParams]:
         return None
     
-    async def post_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams, result: ToolResult) -> Optional[ToolResult]:
+    async def post_tool_call(self, context: HookContext, tool_call: MCPCallToolRequestParams, result: PocketAgentToolResult) -> Optional[PocketAgentToolResult]:
         return result  # Return modified or None to indicate error
 
     async def on_llm_response(self, context: HookContext, response: LitellmModelResponse) -> None:
         pass
     
     async def on_event(self, event: AgentEvent) -> None:
-        from .utils.console_formatter import ConsoleFormatter
+        from pocket_agent.utils.console_formatter import ConsoleFormatter
         formatter = ConsoleFormatter()
         formatter.format_event(event)
 
@@ -86,7 +97,7 @@ class AgentHooks:
     #########################################################
 
     # tool result handler will replace the default tool result handler in PocketAgentClient if implemented
-    # async def on_tool_result(self, context: HookContext, tool_call: ChatCompletionMessageToolCall, tool_result: FastMCPCallToolResult) -> ToolResult:
+    # async def on_tool_result(self, context: HookContext, tool_call: ChatCompletionMessageToolCall, tool_result: FastMCPCallToolResult) -> PocketAgentToolResult:
     #     pass
     
     async def on_tool_error(self, context: HookContext, tool_call: MCPCallToolRequestParams, error: Exception) -> Union[str, False]:
@@ -102,27 +113,120 @@ class AgentHooks:
 class PocketAgent:
     def __init__(self,
                  agent_config: AgentConfig,
-                 mcp_config: dict,
-                 router: Router = None,
+                 mcp_config: Optional[Union[dict, FastMCP]] = None,
+                 router: Optional[Router] = None,
                  logger: Optional[logging.Logger] = None,
                  hooks: Optional[AgentHooks] = None,
+                 sub_agents: Optional[list["PocketAgent"]] = None,
                  **client_kwargs):
-        self.agent_id = agent_config.agent_id or str(uuid.uuid4())
+
         self.logger = logger or configure_pocket_agent_logger()
+        self.agent_config = agent_config
+
+        if not self.agent_config.agent_id:
+            self.agent_config.agent_id = str(uuid.uuid4())
+
+        if not agent_config.name:
+            self.logger.warning("Agent name is not set, using agent_id as name")
+            self.agent_config.name = self.agent_config.agent_id
+
         if router:
             self.llm_completion_handler = router
         else:
             self.llm_completion_handler = litellm
         self.agent_config = agent_config
         self.hooks = hooks or AgentHooks()
-        self.mcp_client = self._init_client(mcp_config, **client_kwargs)
+
+        self._run_lock = asyncio.Lock()
+
+        if not mcp_config and not sub_agents:
+            error_message = "MCP config is empty and no sub agents are provided. At least one of the two must be provided."
+            self.logger.error(error_message)
+            raise ValueError(error_message)
+        
+        self.mcp_config = mcp_config
+        self.sub_agents = sub_agents
+
+        # Mark sub agents as sub agents
+        if self.sub_agents:
+            for sub_agent in self.sub_agents:
+                sub_agent.is_sub_agent = True
+
+        self._init_client(self.mcp_config, self.sub_agents, **client_kwargs)
+        
         self.system_prompt = agent_config.system_prompt or ""
         self.messages = agent_config.messages or []
-        self.logger.info(f"Initializing MCPAgent with agent_id={self.agent_id}, model={agent_config.llm_model}")
+        self.logger.info(f"Initializing MCPAgent with agent_id={self.agent_config.agent_id}, model={agent_config.llm_model}")
         self.logger.info(f"MCPAgent initialized successfully with {len(self.messages)} initial messages")
 
 
-    def _init_client(self, mcp_config: dict, **client_kwargs):
+    #########################################################
+    # Properties
+    #########################################################
+    @property
+    def model(self) -> str:
+        return self.agent_config.llm_model
+
+    @property
+    def name(self) -> str:
+        """Agent name"""
+        return self.agent_config.name
+
+    @property  
+    def agent_id(self) -> str:
+        """Unique agent identifier"""
+        return self.agent_config.agent_id
+
+    @property
+    def role_description(self) -> Optional[str]:
+        """Description of the agent's role/purpose"""
+        return self.agent_config.role_description
+
+    @property
+    def completion_kwargs(self) -> Dict[str, Any]:
+        """LLM completion parameters"""
+        return self.agent_config.get_completion_kwargs()
+
+    @property
+    def message_count(self) -> int:
+        """Number of messages in conversation history"""
+        return len(self.messages)
+
+    @property
+    def has_sub_agents(self) -> bool:
+        """Whether this agent has sub-agents"""
+        if self.sub_agents is None:
+            return False
+        return len(self.sub_agents) > 0
+
+    @property
+    def sub_agent_count(self) -> int:
+        """Number of sub-agents"""
+        if self.sub_agents is None:
+            return 0
+        return len(self.sub_agents)
+
+    @property
+    def is_sub_agent(self) -> bool:
+        """Whether this agent is a sub-agent"""
+        return getattr(self, '_is_sub_agent', False)
+    
+    @is_sub_agent.setter
+    def is_sub_agent(self, value: bool) -> None:
+        self._is_sub_agent = value
+
+    @property
+    def is_configured(self) -> bool:
+        """Whether the agent is properly configured"""
+        return bool(self.agent_config.llm_model and self.mcp_client)
+
+    @property
+    def allow_images(self) -> bool:
+        return self.agent_config.allow_images
+
+
+
+    def _init_client(self, mcp_config: Union[dict, FastMCP, None], sub_agents: Optional[list["PocketAgent"]] = None, **client_kwargs) -> None:
         """
         Initialize the most basic MCP client with the given configuration.
         Override this to add custom client handlers.
@@ -132,17 +236,44 @@ class PocketAgent:
             tool_result_handler = self.create_wrapper_with_context(self.hooks.on_tool_result)
         else:
             tool_result_handler = None
-        
-        return PocketAgentClient(mcp_config=mcp_config,
-                     on_tool_error=self.create_wrapper_with_context(self.hooks.on_tool_error),
-                     tool_result_handler=tool_result_handler,
-                     **client_kwargs)
+
+        if isinstance(mcp_config, dict):
+            self.mcp_client = PocketAgentClient(mcp_config=mcp_config,
+                        on_tool_error=self.create_wrapper_with_context(self.hooks.on_tool_error),
+                        tool_result_handler=tool_result_handler,
+                        **client_kwargs)
+            if sub_agents:
+                composed_sub_agents_server = self._create_composed_sub_agents_server()
+                self._mount_server_to_mcp_client(composed_sub_agents_server)
+        elif isinstance(mcp_config, FastMCP):
+            if sub_agents:
+                composed_sub_agents_server = self._create_composed_sub_agents_server()
+                mcp_config.mount(composed_sub_agents_server)
+            self.mcp_client = PocketAgentClient(mcp_config=mcp_config,
+                        on_tool_error=self.create_wrapper_with_context(self.hooks.on_tool_error),
+                        tool_result_handler=tool_result_handler,
+                        **client_kwargs)
+        elif sub_agents:
+            composed_sub_agents_server = self._create_composed_sub_agents_server()
+            self.mcp_client = PocketAgentClient(mcp_config=composed_sub_agents_server,
+                        on_tool_error=self.create_wrapper_with_context(self.hooks.on_tool_error),
+                        tool_result_handler=tool_result_handler,
+                        **client_kwargs)
+        else:
+            raise ValueError(f"Failed to initialize mcp client: expected mcp config to be of type \
+                dict, FastMCP, or None, but got {type(mcp_config)} and/or sub agents to be of type list, but got {type(sub_agents)}.\
+                both cannot be None or invalid types.")
+
+
+                        
+
 
     def create_wrapper_with_context(self, func: Callable) -> Callable:
         async def wrapper(*args, **kwargs):
             hook_context = self._create_hook_context()
             return await func(hook_context, *args, **kwargs)
         return wrapper
+
 
     def _format_messages(self) -> list[dict]:
         # format system prompt and messages in proper format
@@ -181,9 +312,10 @@ class PocketAgent:
     
 
 
-    async def add_message(self, message: dict) -> None:
+    async def add_message(self, message: dict, **meta) -> None:
         self.logger.debug(f"Adding message: {message}")
-        event = AgentEvent(event_type="new_message", data=message)
+        meta.update({"agent_name": self.agent_config.name, "is_sub_agent": self.is_sub_agent})
+        event = AgentEvent(event_type="new_message", data=message, meta=meta)
         await self.hooks.on_event(event)
         self.messages.append(message)
 
@@ -200,7 +332,7 @@ class PocketAgent:
 
 
 
-    async def _call_single_tool_with_hooks(self, tool_call: MCPCallToolRequestParams) -> ToolResult:
+    async def _call_single_tool_with_hooks(self, tool_call: MCPCallToolRequestParams) -> PocketAgentToolResult:
         """Execute a single tool call with hooks."""
         hook_context = self._create_hook_context()
     
@@ -218,7 +350,7 @@ class PocketAgent:
             raise
 
 
-    async def _call_tools(self, tool_calls: list[ChatCompletionMessageToolCall]) -> list[ToolResult]:
+    async def _call_tools(self, tool_calls: list[ChatCompletionMessageToolCall]) -> list[PocketAgentToolResult]:
         """Execute all tool calls in parallel, with individual hooks for each."""
         transformed_tool_calls = [self.mcp_client.transform_tool_call_request(tool_call) for tool_call in tool_calls]
         tool_results = await asyncio.gather(*[
@@ -229,6 +361,10 @@ class PocketAgent:
 
 
     async def step(self, **override_completion_kwargs) -> dict:
+        """
+        Execute a single step of the agent.
+        A step includes a single LLM response and execution of any tool calls that were found in the LLM response.
+        """
         self.logger.debug("Starting agent step")
         hook_context = self._create_hook_context()
         await self.hooks.pre_step(hook_context)
@@ -316,21 +452,29 @@ class PocketAgent:
         self.messages = []
 
 
+    async def _run_with_lock(self, *args, **kwargs) -> Union[FastMCPToolResult, dict, str]:
+        """
+        Thread-safe wrapper around run() method
+        """
+        async with self._run_lock:
+            self.logger.debug(f"Acquired run lock for agent {self.name}")
+            try:
+                return await self.run(*args, **kwargs)
+            except Exception as e:
+                self.logger.error(f"Error in run: {traceback.format_exc()}")
+                raise
+            finally:
+                self.logger.debug(f"Released run lock for agent {self.name}")
+
+
     @abstractmethod
-    def run(self) -> dict:
+    async def run(self, *args, **kwargs) -> Union[FastMCPToolResult, dict, str]:
         """
         Run the agent.
-        Returns the the final result as a dict.
+        Returns the the final result as a FastMCPToolResult, dict, or str.
         """
         pass
 
-    @property
-    def model(self) -> str:
-        return self.agent_config.llm_model
-
-    @property
-    def allow_images(self) -> bool:
-        return self.agent_config.allow_images
 
     def _create_hook_context(self) -> HookContext:
         """Create a hook context for the current state"""
@@ -338,4 +482,100 @@ class PocketAgent:
             agent=self,
             metadata={}
         )
+
+
+    def _format_composed_sub_agent_server_name(self) -> str:
+        """Format the composed sub agent server name"""
+        return f"interact_with_agent"
+
+    def _format_sub_agent_tool_name(self, agent_name: str) -> str:
+        """Format the sub agent tool name"""
+        return f"{agent_name}-message"
+
+    def _format_sub_agent_server_description(self, agent_name: str, agent_role_description: str) -> str:
+        """Format the sub agents server description"""
+        agent_tool_description = f"Send a message to the {agent_name} agent."
+        if agent_role_description:
+            agent_tool_description += f"Purpose of the {agent_name} agent: \n{agent_role_description}"
+        else:
+            self.logger.warning(f"Agent role description is not set, sub agent tool description only contains ({agent_tool_description})")
+        return agent_tool_description
+
+
+    def _mount_server_to_mcp_client(self, server: FastMCP) -> None:
+        self.mcp_client.mount_server(server)
+
+
+    def _create_composed_sub_agents_server(self) -> FastMCP:
+        """Create a composed sub agents server"""
+        server_name = self._format_composed_sub_agent_server_name()
+        composed_sub_agents_server = FastMCP(name=server_name)
+        for sub_agent in self.sub_agents:
+            sub_agent_tool = sub_agent.as_mcp_tool()
+            composed_sub_agents_server.add_tool(sub_agent_tool)
+        return composed_sub_agents_server
+
+
+    def as_mcp_tool(self) -> FastMCPTool:
+        """
+        Return the agent as an in-memory sub-agent server.
+        """
+        # get agent name and role description
+        agent_name = self.agent_config.name
+        agent_role_description = self.agent_config.role_description
+        agent_tool_name = self._format_sub_agent_tool_name(agent_name)
+        agent_tool_description = self._format_sub_agent_server_description(agent_name, agent_role_description)
+
+        async def message_agent(message: str = Field(..., description=f"The message to send to the {agent_name} agent")) -> FastMCPToolResult:
+            # run the agent
+            result = await self._run_with_lock(message)
+            if isinstance(result, FastMCPToolResult):
+                return result
+            elif isinstance(result, dict):
+                return FastMCPToolResult(
+                    content=[
+                        MCPTextContent(
+                            type="text",
+                            text=json.dumps(result),
+                            meta={"mime_type": "application/json"}
+                        )
+                    ]
+                )
+            elif isinstance(result, str):
+                return FastMCPToolResult(
+                    content=[
+                        MCPTextContent(
+                            type="text",
+                            text=result,
+                            meta={"mime_type": "text/plain"}
+                        )
+                    ]
+                )
+            elif result is None:
+                return FastMCPToolResult(
+                    content=[
+                        MCPTextContent(
+                            type="text",
+                            text="No result returned",
+                            meta={"mime_type": "text/plain"}
+                        )
+                    ]
+                )
+            else:
+                raise ValueError(f"Unsupported result type: {type(result)}. Result must be a FastMCPToolResult, dict, or str.")
+
+        return FastMCPTool.from_function(
+            fn=message_agent,
+            name=agent_tool_name,
+            description=agent_tool_description
+        )
+
+    def as_mcp_server(self) -> FastMCP:
+        """
+        Return the agent as its own MCP server.
+        """
+        mcp_server = FastMCP(name=self.agent_config.name, instructions=self.agent_config.role_description)
+        mcp_server.add_tool(self.as_mcp_tool())
+        return mcp_server
+
 
