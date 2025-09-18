@@ -5,7 +5,6 @@ from pocket_agent.agent import (
     PocketAgent, AgentConfig, 
     AgentEvent, StepResult, AgentHooks
 )
-from pocket_agent.client import PocketAgentClient, ToolResult
 from litellm.types.utils import ModelResponse, Message, Choices, Usage
 import os
 import asyncio
@@ -355,3 +354,162 @@ class TestPocketAgent:
         # This should not raise an error since SimpleTestAgent implements run()
         result = asyncio.run(agent.run())
         assert result == {"status": "test_completed"}
+
+
+class TestPocketAgentMultiAgent:
+    """Test multi-agent functionality"""
+
+    @pytest.fixture
+    def simple_config(self):
+        """Simple agent configuration for testing"""
+        return AgentConfig(
+            llm_model="gpt-4",
+            agent_id="test-agent",
+            name="TestAgent",
+            system_prompt="You are a test assistant",
+            allow_images=False
+        )
+
+    @pytest.fixture  
+    def sub_agent_config(self):
+        """Configuration for a sub-agent"""
+        return AgentConfig(
+            llm_model="gpt-3.5-turbo",
+            name="SubAgent",
+            role_description="A sub-agent that helps with specific tasks",
+            system_prompt="You are a helpful sub-agent",
+            allow_images=False
+        )
+
+    @pytest.fixture
+    def simple_mcp_config(self):
+        """Simple MCP configuration for testing"""
+        return {
+            "mcpServers": {
+                "test": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["server.py"],
+                    "cwd": os.path.dirname(__file__)
+                }
+            }
+        }
+
+    def test_agent_works_with_sub_agents_only(self, simple_config, sub_agent_config, simple_mcp_config):
+        """Test that agent works when no mcp_config is provided but sub_agents are"""
+        # First create a sub-agent with its own mcp_config
+        sub_agent = SimpleTestAgent(
+            agent_config=sub_agent_config,
+            mcp_config=simple_mcp_config
+        )
+        
+        # Create main agent with only sub_agents, no mcp_config
+        agent = SimpleTestAgent(
+            agent_config=simple_config,
+            mcp_config=None,  # Explicitly no MCP config
+            sub_agents=[sub_agent]
+        )
+        
+        assert agent.agent_id == "test-agent"
+        assert agent.model == "gpt-4"
+        assert agent.has_sub_agents is True
+        assert agent.sub_agent_count == 1
+        assert agent.mcp_client is not None
+        assert agent.sub_agents[0].is_sub_agent is True
+
+    def test_agent_fails_when_neither_config_provided(self, simple_config):
+        """Test that agent fails when neither mcp_config nor sub_agents are provided"""
+        with pytest.raises(ValueError) as exc_info:
+            SimpleTestAgent(
+                agent_config=simple_config,
+                mcp_config=None,
+                sub_agents=None
+            )
+        
+        assert "MCP config is empty and no sub agents are provided" in str(exc_info.value)
+        assert "At least one of the two must be provided" in str(exc_info.value)
+
+    def test_agent_works_with_both_mcp_config_and_sub_agents(self, simple_config, sub_agent_config, simple_mcp_config):
+        """Test that agent works when both mcp_config and sub_agents are provided"""
+        # Create sub-agent with its own config
+        sub_agent = SimpleTestAgent(
+            agent_config=sub_agent_config,
+            mcp_config=simple_mcp_config
+        )
+        
+        # Create main agent with both mcp_config and sub_agents
+        agent = SimpleTestAgent(
+            agent_config=simple_config,
+            mcp_config=simple_mcp_config,
+            sub_agents=[sub_agent]
+        )
+        
+        assert agent.agent_id == "test-agent"
+        assert agent.model == "gpt-4"
+        assert agent.has_sub_agents is True
+        assert agent.sub_agent_count == 1
+        assert agent.mcp_client is not None
+        assert agent.sub_agents[0].is_sub_agent is True
+
+    def test_agent_with_multiple_sub_agents(self, simple_config, simple_mcp_config):
+        """Test agent with multiple sub-agents"""
+        # Create multiple sub-agents
+        sub_agent_1 = SimpleTestAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-3.5-turbo",
+                name="SubAgent1",
+                role_description="First sub-agent",
+                system_prompt="You are sub-agent 1"
+            ),
+            mcp_config=simple_mcp_config
+        )
+        
+        sub_agent_2 = SimpleTestAgent(
+            agent_config=AgentConfig(
+                llm_model="gpt-3.5-turbo", 
+                name="SubAgent2",
+                role_description="Second sub-agent",
+                system_prompt="You are sub-agent 2"
+            ),
+            mcp_config=simple_mcp_config
+        )
+        
+        # Create main agent with multiple sub-agents
+        agent = SimpleTestAgent(
+            agent_config=simple_config,
+            mcp_config=None,
+            sub_agents=[sub_agent_1, sub_agent_2]
+        )
+        
+        assert agent.has_sub_agents is True
+        assert agent.sub_agent_count == 2
+        assert agent.sub_agents[0].is_sub_agent is True
+        assert agent.sub_agents[1].is_sub_agent is True
+        assert agent.sub_agents[0].name == "SubAgent1"
+        assert agent.sub_agents[1].name == "SubAgent2"
+
+    def test_sub_agent_properties(self, simple_config, sub_agent_config, simple_mcp_config):
+        """Test sub-agent specific properties"""
+        # Create sub-agent
+        sub_agent = SimpleTestAgent(
+            agent_config=sub_agent_config,
+            mcp_config=simple_mcp_config
+        )
+        
+        # Create main agent
+        agent = SimpleTestAgent(
+            agent_config=simple_config,
+            mcp_config=None,
+            sub_agents=[sub_agent]
+        )
+        
+        # Test main agent properties
+        assert agent.has_sub_agents is True
+        assert agent.sub_agent_count == 1
+        assert agent.is_sub_agent is False  # Main agent is not a sub-agent
+        
+        # Test sub-agent properties  
+        assert sub_agent.has_sub_agents is False  # Sub-agent has no sub-agents
+        assert sub_agent.sub_agent_count == 0
+        assert sub_agent.is_sub_agent is True  # Sub-agent is marked as such
+        assert sub_agent.role_description == "A sub-agent that helps with specific tasks"
