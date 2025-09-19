@@ -151,13 +151,31 @@ class PocketAgent:
         if self.sub_agents:
             for sub_agent in self.sub_agents:
                 sub_agent.is_sub_agent = True
+            
+    
+        self.system_prompt = agent_config.system_prompt or ""
+        self.messages = agent_config.messages or []
+
+        self.logger.info(
+            f"Initializing PocketAgent '{self.name}'",
+            extra={
+                'agent_id': self.agent_id,
+                'model': self.agent_config.llm_model,
+                'has_system_prompt': bool(self.system_prompt),
+                'initial_messages': len(self.messages),
+                'allow_images': self.allow_images,
+                'has_sub_agents': self.has_sub_agents,
+                'sub_agent_count': self.sub_agent_count
+            }
+        )
 
         self._init_client(self.mcp_config, self.sub_agents, **client_kwargs)
         
-        self.system_prompt = agent_config.system_prompt or ""
-        self.messages = agent_config.messages or []
-        self.logger.info(f"Initializing MCPAgent with agent_id={self.agent_config.agent_id}, model={agent_config.llm_model}")
-        self.logger.info(f"MCPAgent initialized successfully with {len(self.messages)} initial messages")
+        # After successful initialization:
+        self.logger.info(
+            f"PocketAgent '{self.name}' ready - {len(self.messages)} messages, "
+            f"{'with' if self.has_sub_agents else 'no'} sub-agents"
+        )
 
 
     #########################################################
@@ -307,7 +325,16 @@ class PocketAgent:
             self.logger.debug(f"LLM response received: full_response={response}")
             return response
         except Exception as e:
-            self.logger.error(f"Error getting LLM response: {e}")
+            self.logger.error(
+                f"LLM request failed - Model: {self.agent_config.llm_model}, "
+                f"Messages: {len(messages)}, Tools: {len(tools) if tools else 0}",
+                exc_info=True,
+                extra={
+                    'agent_id': self.agent_id,
+                    'model': self.agent_config.llm_model,
+                    'message_count': len(messages)
+                }
+            )
             raise
     
 
@@ -346,7 +373,16 @@ class PocketAgent:
                 result = transformed_result
             return result
         except Exception as e:
-            self.logger.error(f"Tool call failed and was not handled by tool error hook: {e}")
+            self.logger.error(
+                f"Tool call '{tool_call.name}' failed and was not handled by tool error hook",
+                exc_info=True,
+                extra={
+                    'agent_id': self.agent_id,
+                    'tool_name': tool_call.name,
+                    'tool_arguments': str(tool_call.arguments)[:200],  # Limit length
+                    'error_type': type(e).__name__
+                }
+            )
             raise
 
 
@@ -370,20 +406,29 @@ class PocketAgent:
         await self.hooks.pre_step(hook_context)
         
         step_result = None
+        step_phase = "llm_response"
         try:
             llm_response = await self._get_llm_response(**override_completion_kwargs)
             await self.hooks.on_llm_response(hook_context, llm_response)
             llm_message = llm_response.choices[0].message
             await self.add_llm_message(llm_message)
             if llm_message.tool_calls:
-                tool_names = [
-                    tool_call.get('function', {}).get('name', 'unknown') 
+                step_phase = "tool_execution"
+                tool_details = [
+                    f"{tool_call.function.name}({len(tool_call.function.arguments)} args)"
                     for tool_call in llm_message.tool_calls
-                    ]
-                self.logger.debug(f"Executing {len(llm_message.tool_calls)} tool calls: {tool_names}")
-
+                ]
+                self.logger.info(
+                    f"Executing {len(llm_message.tool_calls)} tool calls: {', '.join(tool_details)}",
+                    extra={
+                        'agent_id': self.agent_id,
+                        'tool_count': len(llm_message.tool_calls),
+                        'tool_details': tool_details
+                    }
+                )
                 tool_execution_results = await self._call_tools(llm_message.tool_calls)
                 if tool_execution_results:
+                    step_phase = "tool_execution_result_processing"
                     self.logger.debug(f"Received tool execution results: {tool_execution_results}")
                     for tool_execution_result in tool_execution_results:
                         tool_call_id = tool_execution_result.tool_call_id
@@ -407,7 +452,12 @@ class PocketAgent:
                 self.logger.debug("No tool calls in generate result")
                 step_result = StepResult(llm_message=llm_message)
         except Exception as e:
-            self.logger.error(f"Error in step: {traceback.format_exc()}")
+            self.logger.error(f"Error in step: {step_phase} phase", exc_info=True, extra={
+                'agent_id': self.agent_id,
+                'step_phase': step_phase,
+                'message_count': len(self.messages),
+                'has_tool_calls': 'llm_message' in locals() and bool(llm_message.tool_calls)
+            })
             raise
         finally:
             # Post-step hook

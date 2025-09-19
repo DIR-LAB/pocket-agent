@@ -1,5 +1,6 @@
 import asyncio
 from pocket_agent import PocketAgent, AgentConfig
+from typing import Dict, Any
 
 
 class SimpleAgent(PocketAgent):

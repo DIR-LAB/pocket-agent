@@ -47,10 +47,22 @@ class PocketAgentClient:
         self.mcp_log_handler = log_handler or self._default_mcp_log_handler
 
         if isinstance(mcp_config, FastMCPServer):
-            self.client_logger.info(f"Using FastMCP server as transport")
+            self.client_logger.info(
+                f"Using FastMCP server transport: {mcp_config.name}",
+                extra={
+                    'transport_type': 'fastmcp_server',
+                    'server_name': mcp_config.name
+                }
+            )
             self.mcp_server_config = mcp_config
         else:
-            self.client_logger.info(f"Using MCP config as transport")
+            self.client_logger.info(
+                f"Using MCP config as transport: {mcp_config}",
+                extra={
+                    'transport_type': 'mcp_config',
+                    'mcp_config': mcp_config
+                }
+            )
             self.mcp_server_config = copy.deepcopy(mcp_config)
             if mcp_server_query_params:
                 self.client_logger.info(f"Adding MCP server query params to MCP config")
@@ -162,14 +174,44 @@ class PocketAgentClient:
                         tool_call_name=tool_call_name,
                         tool_result_content=tool_result_content
                     )
+
+                # False means the tool error handler did not handle the error
                 elif on_tool_error_result == False:
-                    self.client_logger.error(f"on_tool_error returned False, which means the tool call should be skipped")
+                    self.client_logger.error(
+                        f"Tool error handler returned False, which means the tool call should be skipped: '{tool_call_name}'",
+                        extra={
+                            'tool_name': tool_call_name,
+                            'tool_arguments': str(tool_call.arguments)[:200],
+                            'error_type': type(e).__name__,
+                            'error_message': str(e)
+                        }
+                    )
                     raise e
+
+                # If we get here, the tool error handler returned an invalid type
                 else:
-                    error_message = f"on_tool_error expected to return a string or False but got {type(on_tool_error_result)}: {on_tool_error_result}"
-                    self.client_logger.error(error_message)
+                    error_message = f"Tool error handler returned invalid type: expected str|False, got {type(on_tool_error_result)}"
+                    self.client_logger.error(
+                        error_message,
+                        extra={
+                            'tool_name': tool_call_name,
+                            'handler_result_type': type(on_tool_error_result).__name__,
+                            'handler_result': str(on_tool_error_result)[:100]
+                        }
+                    )
                     raise ValueError(error_message)
+            
+            # If we get here, there is no tool error handler
             else:
+                self.client_logger.error(
+                    f"No tool error handler is set",
+                    extra={
+                        'tool_name': tool_call_name,
+                        'tool_arguments': str(tool_call.arguments)[:200],
+                        'error_type': type(e).__name__,
+                        'error_message': str(e)
+                    }
+                )
                 raise e
         else:
             return self.tool_result_handler(tool_call, tool_result)
