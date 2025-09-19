@@ -415,7 +415,7 @@ class PocketAgent:
             if llm_message.tool_calls:
                 step_phase = "tool_execution"
                 tool_details = [
-                    f"{tool_call.function.name}({len(tool_call.function.arguments)} args)"
+                    f"{tool_call.function.name}"
                     for tool_call in llm_message.tool_calls
                 ]
                 self.logger.info(

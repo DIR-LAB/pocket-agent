@@ -159,6 +159,7 @@ class PocketAgentClient:
 
         try:
             async with self.client:
+                self.client_logger.debug(f"Calling tool: {tool_call_name} with arguments: {tool_call_arguments}")
                 tool_result = await self.client.call_tool(tool_call_name, tool_call_arguments)
         except ToolError as e:
             # handle tool error
