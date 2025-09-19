@@ -1,6 +1,6 @@
 [project]
 name = "pocket-agent"
-version = "0.2.0"
+version = "0.2.1"
 description = "A lightweight, extensible framework for building LLM agents with Model Context Protocol (MCP) support"
 readme = "README.md"
 license = "MIT"
