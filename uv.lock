@@ -1905,7 +1905,7 @@ wheels = [
 
 [[package]]
 name = "pocket-agent"
-version = "0.1.11"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -1918,12 +1918,14 @@ cookbook-all = [
     { name = "rich" },
     { name = "streamlit" },
 ]
-cookbook-frontend = [
-    { name = "rich" },
-    { name = "streamlit" },
-]
 cookbook-rag = [
     { name = "llama-index" },
+]
+cookbook-rich = [
+    { name = "rich" },
+]
+cookbook-streamlit = [
+    { name = "streamlit" },
 ]
 dev = [
     { name = "build" },
@@ -1953,11 +1955,9 @@ cookbook-all = [
     { name = "rich", specifier = ">=14.1.0" },
     { name = "streamlit", specifier = ">=1.49.1" },
 ]
-cookbook-frontend = [
-    { name = "rich", specifier = ">=14.1.0" },
-    { name = "streamlit", specifier = ">=1.49.1" },
-]
 cookbook-rag = [{ name = "llama-index", specifier = ">=0.14.2" }]
+cookbook-rich = [{ name = "rich", specifier = ">=14.1.0" }]
+cookbook-streamlit = [{ name = "streamlit", specifier = ">=1.49.1" }]
 dev = [
     { name = "build", specifier = ">=1.0.0" },
     { name = "hatch-vcs", specifier = ">=0.5.0" },

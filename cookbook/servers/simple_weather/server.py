@@ -2,6 +2,7 @@ from fastmcp import FastMCP
 import random
 import time
 import logging
+import asyncio
 
 # Suppress FastMCP's verbose logging so it doesnt interfere with the agent's console output
 logging.getLogger("FastMCP").setLevel(logging.WARNING)
@@ -29,9 +30,9 @@ WEATHER_CONDITIONS = [
 @weather_mcp.tool(
     description="Get the current weather for a specific city"
 )
-def get_weather(city: str) -> str:
+async def get_weather(city: str) -> str:
     """Get weather information for a city."""
-    time.sleep(5)
+    await asyncio.sleep(5)
     city_lower = city.lower()
     
     if city_lower in WEATHER_DATA:
@@ -45,9 +46,9 @@ def get_weather(city: str) -> str:
 @weather_mcp.tool(
     description="Get a weather forecast for multiple days"
 )
-def get_forecast(city: str, days: int = 3) -> str:
+async def get_forecast(city: str, days: int = 3) -> str:
     """Get a multi-day weather forecast for a city."""
-    time.sleep(5)
+    await asyncio.sleep(5)
     if days > 7:
         days = 7  # Limit to 7 days
     
