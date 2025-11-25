@@ -118,6 +118,7 @@ class PocketAgent:
                  logger: Optional[logging.Logger] = None,
                  hooks: Optional[AgentHooks] = None,
                  sub_agents: Optional[list["PocketAgent"]] = None,
+                 custom_tool_call_metadata: Optional[dict] = None,
                  **client_kwargs):
 
         self.logger = logger or configure_pocket_agent_logger()
@@ -151,8 +152,9 @@ class PocketAgent:
         if self.sub_agents:
             for sub_agent in self.sub_agents:
                 sub_agent.is_sub_agent = True
+
+        self.custom_tool_call_metadata = custom_tool_call_metadata or {}
             
-    
         self.system_prompt = agent_config.system_prompt or ""
         self.messages = agent_config.messages or []
 
@@ -388,14 +390,30 @@ class PocketAgent:
                 }
             )
             raise
+    
+    def add_metadata_to_tool_calls(self, tool_calls: list[MCPCallToolRequestParams]) -> list[MCPCallToolRequestParams]:
+        """Add metadata to tool calls"""
+        self.logger.debug(f"Adding metadata to tool calls: {tool_calls}")
+        for tool_call in tool_calls:
+            tool_call_metadata = {
+                "tool_call_id": tool_call.id,
+                "context_id": self.agent_id,
+                "agent_name": self.agent_config.name,
+                "is_sub_agent": self.is_sub_agent
+                }
+            tool_call_metadata.update(self.custom_tool_call_metadata)
+            tool_call.meta = tool_call_metadata
+        self.logger.debug(f"Tool calls with metadata: {tool_calls}")
+        return tool_calls
 
 
     async def _call_tools(self, tool_calls: list[ChatCompletionMessageToolCall]) -> list[PocketAgentToolResult]:
         """Execute all tool calls in parallel, with individual hooks for each."""
-        transformed_tool_calls = [self.mcp_client.transform_tool_call_request(tool_call) for tool_call in tool_calls]
+        mcp_tool_calls = [self.mcp_client.transform_tool_call_request(tool_call) for tool_call in tool_calls]
+        mcp_tool_calls = self.add_metadata_to_tool_calls(mcp_tool_calls)
         tool_results = await asyncio.gather(*[
             self._call_single_tool_with_hooks(tool_call) 
-            for tool_call in transformed_tool_calls
+            for tool_call in mcp_tool_calls
         ])
         return tool_results
 

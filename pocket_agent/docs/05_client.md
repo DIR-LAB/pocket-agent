@@ -2,19 +2,56 @@
 
 Each PocketAgent instance initializes a PocketAgentClient which acts as a wrapper for the [FastMCP Client](https://gofastmcp.com/clients/client) to implement the standard mcp protocol features and some additional features.
 
-## Custom Query Params
+## Custom Metadata
 
-- Sending metadata such as a custom id to MCP servers is not handled well by the protocol (until [this](https://github.com/modelcontextprotocol/python-sdk/pull/1231) is merged). For now a workaround is to send metadata via query params to mcp servers using an http transport.
-
+- Sending custom metadata is now supported by the MCP protocol. As such, Pocket Agent also supports sending custom metadata to MCP servers during tool calls. By default, Pocket Agent sends the following metadata on each tool call:
     ```python
+    {
+        "tool_call_id": tool_call.id,
+        "context_id": self.agent_id,
+        "agent_name": self.agent_config.name,
+        "is_sub_agent": self.is_sub_agent
+    }
+    ```
+- To add additional custom values to the metadata, the `PocketAgent` class exposes a  `custom_tool_call_metadata` parameter which accepts a `dict`. Custom metadata will be merged with the default metadata. For example:
+    ```python
+    # Create a PocketAgent instance with custom metadata
     agent = PocketAgent(
-        mcp_server_query_params = {
-            "context_id": "1111"    # context_id will automatically be added to the server endpoint when sending a request
+        ...
+        custom_tool_call_metadata = {
+            "context_id": "1111",
+            "agent_category": "researcher"
         }
     )
-    ```
 
-    *Note: Query params must use custom MCP middleware to be interpreted by servers*
+    # Every tool call from the agent will have its `meta` set to this:
+    {
+        "tool_call_id": tool_call.id,
+        "context_id": "1111",
+        "agent_name": self.agent_config.name,
+        "is_sub_agent": self.is_sub_agent,
+        "agent_category": "researcher"
+    }
+    ```
+- In order to access tool call metadata from within an MCP tool you can simply use the automatically injected Context:
+    ```python
+    BASE_PATHS = {
+        "1432": "home/dir/1432"
+        "1111": "home/dir/1111"
+    }
+    @mcp.tool
+    def save_file(file_name: str, file_content: str, ctx: Context) -> str:
+        meta = ctx.request_context.meta
+        base_path = "/dir/0"
+        if meta:
+            context_id = meta.context_id if hasattr(meta, 'context_id') else None
+            if context_id:
+                base_path = BASE_PATHS.get(context_id, base_path)
+        file_path = os.path.join(base_path, file_name)
+        # Save file to path
+
+        return f"File saved"
+    ```
 
 ## on_tool_error (hook)
 

@@ -118,7 +118,7 @@ You can use PocketAgent out of the box in 3 steps:
                 "transport": "stdio",
                 "command": "python",
                 "args": ["server.py"],
-                "cwd": "path/to/server.py
+                "cwd": "path/to/server.py"
             }
         }
     }

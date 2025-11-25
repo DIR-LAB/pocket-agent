@@ -10,6 +10,7 @@ import asyncio
 import os
 from typing import Dict, Any
 from unittest.mock import Mock, AsyncMock
+import json
 
 from pocket_agent.agent import PocketAgent, AgentConfig, AgentHooks, StepResult
 from pocket_agent.client import PocketAgentClient
@@ -58,8 +59,9 @@ class TestAgentIntegration:
     def simple_agent_config(self):
         """Simple agent configuration for testing"""
         return AgentConfig(
-            llm_model="gpt-4",
+            llm_model="gpt-5-mini",
             agent_id="test-agent",
+            name="MainTestAgent",
             system_prompt="You are a helpful assistant that can use tools.",
             allow_images=False,
             completion_kwargs={"tool_choice": "auto"}
@@ -79,91 +81,6 @@ class TestAgentIntegration:
             }
         }
 
-    @pytest.fixture
-    def mock_llm_response_no_tools(self):
-        """Simple LLM response without tool calls"""
-        return ModelResponse(
-            id="test-123",
-            created=1735081811,
-            model="gpt-4",
-            object="chat.completion",
-            system_fingerprint="test",
-            choices=[
-                Choices(
-                    finish_reason="stop",
-                    index=0,
-                    message=Message(
-                        content="Hello! I'm ready to help.",
-                        role="assistant",
-                        tool_calls=None,
-                        function_call=None,
-                    ),
-                )
-            ],
-            usage=Usage(completion_tokens=10, prompt_tokens=20, total_tokens=30),
-            service_tier=None,
-        )
-
-    @pytest.fixture  
-    def mock_llm_response_with_greet_tool(self):
-        """LLM response that wants to call the greet tool"""
-        from litellm.types.utils import ChatCompletionMessageToolCall, Function
-        
-        return ModelResponse(
-            id="test-456",
-            created=1735081811,
-            model="gpt-4", 
-            object="chat.completion",
-            system_fingerprint="test",
-            choices=[
-                Choices(
-                    finish_reason="tool_calls",
-                    index=0,
-                    message=Message(
-                        content=None,
-                        role="assistant",
-                        tool_calls=[
-                            ChatCompletionMessageToolCall(
-                                function=Function(
-                                    arguments='{"name":"Alice"}',
-                                    name="greet",
-                                ),
-                                id="call_greet_123",
-                                type="function",
-                            )
-                        ],
-                        function_call=None,
-                    ),
-                )
-            ],
-            usage=Usage(completion_tokens=25, prompt_tokens=30, total_tokens=55),
-            service_tier=None,
-        )
-
-    @pytest.fixture
-    def mock_llm_final_response(self):
-        """Final LLM response after tool calls"""
-        return ModelResponse(
-            id="test-final",
-            created=1735081811,
-            model="gpt-4",
-            object="chat.completion",
-            system_fingerprint="test",
-            choices=[
-                Choices(
-                    finish_reason="stop",
-                    index=0,
-                    message=Message(
-                        content="I've completed the requested tasks!",
-                        role="assistant", 
-                        tool_calls=None,
-                        function_call=None,
-                    ),
-                )
-            ],
-            usage=Usage(completion_tokens=10, prompt_tokens=50, total_tokens=60),
-            service_tier=None,
-        )
 
     @pytest.mark.asyncio
     async def test_agent_initialization_with_real_server(self, real_mcp_config, simple_agent_config):
@@ -175,7 +92,7 @@ class TestAgentIntegration:
         
         # Basic initialization checks
         assert agent.agent_id == "test-agent"
-        assert agent.model == "gpt-4"
+        assert agent.model == "gpt-5-mini"
         assert len(agent.messages) == 0
         assert agent.allow_images is False
         assert agent.mcp_client is not None
@@ -235,7 +152,7 @@ class TestAgentIntegration:
         mock_response = ModelResponse(
             id="test",
             created=1,
-            model="gpt-4",
+            model="gpt-5-mini",
             object="chat.completion", 
             system_fingerprint="test",
             choices=[
@@ -278,7 +195,7 @@ class TestAgentIntegration:
         mock_tool_response = ModelResponse(
             id="test-tool",
             created=1,
-            model="gpt-4",
+            model="gpt-5-mini",
             object="chat.completion",
             system_fingerprint="test",
             choices=[
@@ -306,7 +223,7 @@ class TestAgentIntegration:
         mock_final_response = ModelResponse(
             id="test-final",
             created=1,
-            model="gpt-4",
+            model="gpt-5-mini",
             object="chat.completion",
             system_fingerprint="test", 
             choices=[
@@ -343,11 +260,97 @@ class TestAgentIntegration:
         # First step should have tool calls and results
         assert results[0].llm_message.tool_calls is not None
         assert len(results[0].tool_execution_results) == 1
-        assert "Hello, Integration Test!" in results[0].tool_execution_results[0].tool_result_content[0]["text"]
+        assert "Hello, Integration Test" in results[0].tool_execution_results[0].tool_result_content[0]["text"]
+        assert "test-agent" in results[0].tool_execution_results[0].tool_result_content[0]["text"]
         
         # Second step should be final response
         assert results[1].llm_message.tool_calls is None
         assert results[1].llm_message.content == "I've greeted the user successfully!"
+    
+
+    @pytest.mark.asyncio
+    async def test_tool_calling_with_custom_tool_call_metadata(self, real_mcp_config, simple_agent_config, mock_router):
+        """Test tool calling with custom tool call metadata"""
+        from litellm.types.utils import ChatCompletionMessageToolCall, Function
+        mock_tool_response = ModelResponse(
+            id="test-tool",
+            created=1,
+            model="gpt-5-mini",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        content=None,
+                        role="assistant",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                function=Function(arguments=None, name="get_tool_call_metadata"),
+                                id="call_123",
+                                type="function",
+                            )
+                        ],
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=25, prompt_tokens=30, total_tokens=55),
+            service_tier=None,
+        )
+        
+        mock_final_response = ModelResponse(
+            id="test-final",
+            created=1,
+            model="gpt-5-mini",
+            object="chat.completion",
+            system_fingerprint="test", 
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content="I've returned the custom tool call metadata!",
+                        role="assistant",
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=50, total_tokens=60),
+            service_tier=None,
+        )
+        
+        # Mock router to return tool call first, then final response
+        mock_router.acompletion = AsyncMock(side_effect=[mock_tool_response, mock_final_response])
+        
+        agent = SimpleIntegrationTestAgent(
+            agent_config=simple_agent_config,
+            mcp_config=real_mcp_config,
+            router=mock_router,
+            custom_tool_call_metadata={"agent_type": "researcher"}
+        )
+        
+        # Run conversation
+        results = await agent.run_conversation(["Please get the custom tool call metadata"])
+        
+        # Should have 2 steps: tool call + final response
+        assert len(results) == 2
+        
+        # First step should have tool calls and results
+        assert results[0].llm_message.tool_calls is not None
+        assert len(results[0].tool_execution_results) == 1
+        # try to load result as json
+        result_json = json.loads(results[0].tool_execution_results[0].tool_result_content[0]["text"])
+        assert "agent_type" in result_json
+        assert result_json["agent_type"] == "researcher"
+        assert "context_id" in result_json
+        assert result_json["context_id"] == "test-agent"
+        assert "agent_name" in result_json
+        assert result_json["agent_name"] == "MainTestAgent"
+        assert "is_sub_agent" in result_json
+        assert result_json["is_sub_agent"] == False
 
     @pytest.mark.asyncio
     async def test_parallel_tool_calls_concept(self, fastmcp_server):
@@ -407,7 +410,7 @@ class TestAgentIntegration:
         
         # Mock simple response
         mock_response = ModelResponse(
-            id="test", created=1, model="gpt-4", object="chat.completion",
+            id="test", created=1, model="gpt-5-mini", object="chat.completion",
             system_fingerprint="test",
             choices=[
                 Choices(

@@ -25,10 +25,10 @@ class TestAgentConfig:
     def test_agent_config_creation(self):
         """Test basic AgentConfig creation with required fields"""
         config = AgentConfig(
-            llm_model="gpt-4",
+            llm_model="gpt-5-mini",
             system_prompt="Test prompt"
         )
-        assert config.llm_model == "gpt-4"
+        assert config.llm_model == "gpt-5-mini"
         assert config.system_prompt == "Test prompt"
         assert config.agent_id is None
         assert config.messages is None
@@ -40,7 +40,7 @@ class TestAgentConfig:
         completion_kwargs = {"temperature": 0.7}
         
         config = AgentConfig(
-            llm_model="gpt-3.5-turbo",
+            llm_model="gpt-5-mini",
             agent_id="test-agent",
             system_prompt="You are helpful",
             messages=messages,
@@ -48,7 +48,7 @@ class TestAgentConfig:
             completion_kwargs=completion_kwargs
         )
         
-        assert config.llm_model == "gpt-3.5-turbo"
+        assert config.llm_model == "gpt-5-mini"
         assert config.agent_id == "test-agent"
         assert config.system_prompt == "You are helpful"
         assert config.messages == messages
@@ -57,7 +57,7 @@ class TestAgentConfig:
 
     def test_get_completion_kwargs_handles_none(self):
         """Test get_completion_kwargs when completion_kwargs is None"""
-        config = AgentConfig(llm_model="gpt-4")
+        config = AgentConfig(llm_model="gpt-5-mini")
         config.completion_kwargs = None
         assert config.get_completion_kwargs() == {}
 
@@ -100,7 +100,7 @@ class TestPocketAgent:
     def simple_config(self):
         """Simple agent configuration for testing"""
         return AgentConfig(
-            llm_model="gpt-4",
+            llm_model="gpt-5-mini",
             agent_id="test-agent",
             system_prompt="You are a test assistant",
             allow_images=False
@@ -128,7 +128,7 @@ class TestPocketAgent:
         )
         
         assert agent.agent_id == "test-agent"
-        assert agent.model == "gpt-4"
+        assert agent.model == "gpt-5-mini"
         assert agent.system_prompt == "You are a test assistant"
         assert agent.allow_images is False
         assert len(agent.messages) == 0
@@ -136,7 +136,7 @@ class TestPocketAgent:
 
     def test_agent_generates_id_when_none(self, simple_mcp_config):
         """Test that agent generates UUID when no agent_id provided"""
-        config = AgentConfig(llm_model="gpt-4")  # No agent_id
+        config = AgentConfig(llm_model="gpt-5-mini")  # No agent_id
         
         agent = SimpleTestAgent(
             agent_config=config,
@@ -195,7 +195,7 @@ class TestPocketAgent:
     async def test_add_user_message_includes_images_when_enabled(self, simple_mcp_config):
         """Test that images are included when allow_images=True"""
         config = AgentConfig(
-            llm_model="gpt-4",
+            llm_model="gpt-5-mini",
             system_prompt="Test",
             allow_images=True  # Enable images
         )
@@ -236,7 +236,7 @@ class TestPocketAgent:
         mock_response = ModelResponse(
             id="test-123",
             created=1,
-            model="gpt-4",
+            model="gpt-5-mini",
             object="chat.completion",
             system_fingerprint="test",
             choices=[
@@ -291,7 +291,7 @@ class TestPocketAgent:
             mcp_config=simple_mcp_config
         )
         
-        assert agent.model == "gpt-4"
+        assert agent.model == "gpt-5-mini"
         assert agent.allow_images is False
         assert agent.agent_id == "test-agent"
 
@@ -316,7 +316,7 @@ class TestPocketAgent:
         
         # Mock simple response
         mock_response = ModelResponse(
-            id="test", created=1, model="gpt-4", object="chat.completion",
+            id="test", created=1, model="gpt-5-mini", object="chat.completion",
             system_fingerprint="test",
             choices=[
                 Choices(
@@ -364,7 +364,7 @@ class TestPocketAgentMultiAgent:
     def simple_config(self):
         """Simple agent configuration for testing"""
         return AgentConfig(
-            llm_model="gpt-4",
+            llm_model="gpt-5-mini",
             agent_id="test-agent",
             name="TestAgent",
             system_prompt="You are a test assistant",
@@ -375,7 +375,7 @@ class TestPocketAgentMultiAgent:
     def sub_agent_config(self):
         """Configuration for a sub-agent"""
         return AgentConfig(
-            llm_model="gpt-3.5-turbo",
+            llm_model="gpt-5-mini",
             name="SubAgent",
             role_description="A sub-agent that helps with specific tasks",
             system_prompt="You are a helpful sub-agent",
@@ -412,7 +412,7 @@ class TestPocketAgentMultiAgent:
         )
         
         assert agent.agent_id == "test-agent"
-        assert agent.model == "gpt-4"
+        assert agent.model == "gpt-5-mini"
         assert agent.has_sub_agents is True
         assert agent.sub_agent_count == 1
         assert agent.mcp_client is not None
@@ -446,7 +446,7 @@ class TestPocketAgentMultiAgent:
         )
         
         assert agent.agent_id == "test-agent"
-        assert agent.model == "gpt-4"
+        assert agent.model == "gpt-5-mini"
         assert agent.has_sub_agents is True
         assert agent.sub_agent_count == 1
         assert agent.mcp_client is not None
@@ -457,7 +457,7 @@ class TestPocketAgentMultiAgent:
         # Create multiple sub-agents
         sub_agent_1 = SimpleTestAgent(
             agent_config=AgentConfig(
-                llm_model="gpt-3.5-turbo",
+                llm_model="gpt-5-mini",
                 name="SubAgent1",
                 role_description="First sub-agent",
                 system_prompt="You are sub-agent 1"
@@ -467,7 +467,7 @@ class TestPocketAgentMultiAgent:
         
         sub_agent_2 = SimpleTestAgent(
             agent_config=AgentConfig(
-                llm_model="gpt-3.5-turbo", 
+                llm_model="gpt-5-mini", 
                 name="SubAgent2",
                 role_description="Second sub-agent",
                 system_prompt="You are sub-agent 2"

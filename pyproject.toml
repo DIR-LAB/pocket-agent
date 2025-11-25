@@ -12,7 +12,7 @@ maintainers = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "fastmcp>=2.12.2",
+    "fastmcp>=2.13.1",
     "litellm>=1.76.3",
 ]
 keywords = ["llm", "ai", "agent", "mcp", "model-context-protocol"]

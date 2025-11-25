@@ -89,25 +89,6 @@ class PocketAgentClient:
             **self.client_init_kwargs
         )
 
-    # This function allows agents to metadata via query params to MCP servers (e.g. supply a user id) 
-    # Using this approach is only temporary until the official MCP Python SDK supports metadata in tool calls
-    def _add_mcp_server_query_params(self, mcp_server_query_params: dict) -> dict:
-        mcp_config = copy.deepcopy(self.mcp_server_config)
-        mcp_servers = mcp_config["mcpServers"]
-        for server_name, server_config in mcp_servers.items():
-            if "url" in server_config:
-                mcp_server_url = server_config["url"]
-                for idx, (param, value) in enumerate(mcp_server_query_params.items()):
-                    if idx == 0:
-                        mcp_server_url += f"?{param}={value}"
-                    else:
-                        mcp_server_url += f"&{param}={value}"
-                mcp_config["mcpServers"][server_name]["url"] = mcp_server_url
-            else:
-                self.client_logger.warning(f"MCP server {server_name} is not an http server, so query params are not supported")
-        return mcp_config
-
-
 
     async def _default_mcp_log_handler(self, message: LogMessage):
         """Handle MCP server logs using dedicated MCP logger"""
@@ -159,11 +140,12 @@ class PocketAgentClient:
         tool_call_id = tool_call.id
         tool_call_name = tool_call.name
         tool_call_arguments = tool_call.arguments
+        tool_call_meta = tool_call.meta
 
         try:
             async with self.client:
-                self.client_logger.debug(f"Calling tool: {tool_call_name} with arguments: {tool_call_arguments}")
-                tool_result = await self.client.call_tool(tool_call_name, tool_call_arguments)
+                self.client_logger.debug(f"Calling tool: {tool_call_name} with arguments: {tool_call_arguments} and meta: {tool_call_meta}")
+                tool_result = await self.client.call_tool(tool_call_name, tool_call_arguments, meta=tool_call_meta)
         except ToolError as e:
             # handle tool error
             if self.on_tool_error:
