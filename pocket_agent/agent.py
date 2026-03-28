@@ -1,4 +1,4 @@
-from litellm import Router
+from litellm import Router, get_supported_openai_params, supports_response_schema
 import litellm
 from litellm.types.utils import (
     ChatCompletionMessageToolCall, 
@@ -536,6 +536,36 @@ class PocketAgent:
         while step_result.llm_message.tool_calls is not None:
             step_result = await self.step()
 
+        # if a response schema is passed, call the LLM one more time with no tools to get the result 
+        response_schema = kwargs.get("response_schema")
+        if response_schema:
+            from pydantic import BaseModel
+            model_params = get_supported_openai_params(self.agent_config.llm_model)
+            if "response_format" in model_params:
+                if supports_response_schema(self.agent_config.llm_model):
+                    response_format_dict = {
+                        "tool_choice": "none",
+                        "response_format": response_schema,
+                    }
+                    await self.add_user_message(
+                        "Please return your last result with the JSON Schema format specified."
+                    )
+                    step_result = await self.step(
+                        **response_format_dict
+                    )
+                    return step_result.llm_message.content
+                else:
+                    self.logger.warning(
+                        "JSON Schema is not supported for model "
+                        f"{self.agent_config.llm_model}; returning final unstructured response"
+                    )
+                    return step_result.llm_message.content
+            else:
+                self.logger.warning(
+                    f"OpenAI Style parameters are not supported for model {self.agent_config.llm_model}; "
+                    "returning final unstructured response"
+                )
+        
         # return the last llm message without tool calls
         return step_result.llm_message.content
 

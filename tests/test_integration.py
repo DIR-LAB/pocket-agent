@@ -66,6 +66,17 @@ class TestAgentIntegration:
         )
 
     @pytest.fixture
+    def structured_response_agent_config(self):
+        """Agent configuration for testing structured response"""
+        return AgentConfig(
+            llm_model="gpt-5-nano",
+            agent_id="test-agent",
+            system_prompt="You are a helpful assistant that can use tools.",
+            allow_images=False,
+            completion_kwargs={"tool_choice": "auto"}
+        )
+
+    @pytest.fixture
     def real_mcp_config(self):
         """MCP configuration that points to real test server"""
         return {
@@ -473,3 +484,121 @@ class TestAgentIntegration:
         assert len(user_message["content"]) == 1
         assert user_message["content"][0]["type"] == "text"
         assert user_message["content"][0]["text"] == "Describe image"
+
+    @pytest.mark.asyncio
+    async def test_response_schema_handling(
+        self,
+        structured_response_agent_config,
+        real_mcp_config,
+        mock_router,
+    ):
+        """Test that agent returns a structured response when a response schema is passed"""
+        import json
+        from pydantic import BaseModel
+        from litellm.types.utils import ChatCompletionMessageToolCall, Function
+
+        class MultiplicationResponseSchema(BaseModel):
+            a: int
+            b: int
+            result: int
+
+        agent = PocketAgent(
+            agent_config=structured_response_agent_config,
+            mcp_config=real_mcp_config,
+            router=mock_router,
+        )
+
+        tool_call_response = ModelResponse(
+            id="step-1",
+            created=1,
+            model="gpt-5-nano",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        content=None,
+                        role="assistant",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                function=Function(
+                                    arguments='{"a": 2, "b": 3}',
+                                    name="multiply",
+                                ),
+                                id="call_multiply_123",
+                                type="function",
+                            )
+                        ],
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=20, prompt_tokens=30, total_tokens=50),
+            service_tier=None,
+        )
+
+        final_text_response = ModelResponse(
+            id="step-2",
+            created=1,
+            model="gpt-5-nano",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content="The product of 2 and 3 is 6.",
+                        role="assistant",
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=40, total_tokens=50),
+            service_tier=None,
+        )
+
+        structured_response = ModelResponse(
+            id="step-3",
+            created=1,
+            model="gpt-5-nano",
+            object="chat.completion",
+            system_fingerprint="test",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(
+                        content='{"a": 2, "b": 3, "result": 6}',
+                        role="assistant",
+                        tool_calls=None,
+                        function_call=None,
+                    ),
+                )
+            ],
+            usage=Usage(completion_tokens=10, prompt_tokens=50, total_tokens=60),
+            service_tier=None,
+        )
+
+        mock_router.acompletion = AsyncMock(
+            side_effect=[
+                tool_call_response,
+                final_text_response,
+                structured_response,
+            ]
+        )
+
+        result = await agent.run(
+            "Please multiply 2 and 3 using the multiply tool and then return the result in JSON.",
+            response_schema=MultiplicationResponseSchema,
+        )
+
+        assert mock_router.acompletion.call_count == 3
+
+        parsed = MultiplicationResponseSchema.model_validate_json(result)
+        assert parsed.a == 2
+        assert parsed.b == 3
+        assert parsed.result == 6
